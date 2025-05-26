@@ -152,3 +152,61 @@ class CustomAntichessPolicy(ActorCriticPolicy):
             
         return actions
 
+class MaskedActorCriticPolicy(ActorCriticPolicy):
+    """
+    Actor-critic policy that supports action masking.
+    
+    This extends the standard SB3 ActorCriticPolicy to handle action masks
+    provided with the observations.
+    """
+    
+    def forward(
+        self, 
+        obs: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        deterministic: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass of the policy.
+        
+        Args:
+            obs: The observation, which can be a tensor or a dictionary with 
+                 an 'action_mask' key
+            deterministic: Whether to use a deterministic action
+            
+        Returns:
+            actions, values, log_probs
+        """
+        # Extract observation and action mask
+        if isinstance(obs, dict):
+            action_mask = obs.get("action_mask", None)
+            observations = obs["observation"]
+        else:
+            action_mask = None
+            observations = obs
+            
+        # Get latent features
+        latent_pi, latent_vf = self._get_latent(observations)
+        
+        # Get action distribution
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        
+        # Apply action mask if provided
+        if action_mask is not None:
+            # Zero out logits for invalid actions
+            if hasattr(distribution, "distribution") and hasattr(distribution.distribution, "logits"):
+                # Add a small negative number to logits for masked actions
+                # This makes their probability nearly zero after softmax
+                masked_logits = distribution.distribution.logits.clone()
+                masked_logits = masked_logits + torch.log(action_mask + 1e-10)
+                distribution.distribution.logits = masked_logits
+        
+        # Sample actions
+        if deterministic:
+            actions = distribution.mode()
+        else:
+            actions = distribution.sample()
+        
+        log_probs = distribution.log_prob(actions)
+        values = self.value_net(latent_vf)
+        
+        return actions, values, log_probs
