@@ -83,3 +83,72 @@ class ChessCNN(BaseFeaturesExtractor):
         features = self.cnn(observations)
         return self.fc(features)
 
+class CustomAntichessPolicy(ActorCriticPolicy):
+    """
+    Custom policy for Antichess that handles action masking.
+    This ensures that only legal moves can be selected during training and evaluation.
+    """
+    
+    def __init__(
+        self,
+        observation_space: gym.spaces.Space,
+        action_space: gym.spaces.Space,
+        lr_schedule: callable,
+        *args,
+        **kwargs,
+    ):
+        """Initialize the policy."""
+        # Use our custom feature extractor
+        kwargs["features_extractor_class"] = ChessCNN
+        kwargs["features_extractor_kwargs"] = dict(features_dim=256)
+        super(CustomAntichessPolicy, self).__init__(
+            observation_space,
+            action_space,
+            lr_schedule,
+            *args,
+            **kwargs,
+        )
+    
+    def _predict(self, observation: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+        """
+        Get the action according to the policy for a given observation.
+        
+        Args:
+            observation: The input observation
+            deterministic: Whether to use a deterministic action
+            
+        Returns:
+            The selected action
+        """
+        # Get action mask from the observation (last part of the observation)
+        if isinstance(observation, dict) and "action_mask" in observation:
+            action_mask = observation["action_mask"]
+        else:
+            # If no mask is provided, assume all actions are valid
+            action_mask = torch.ones(self.action_space.n)
+            
+        # Get features
+        latent_pi, latent_vf = self._get_latent(observation)
+        
+        # Get action distribution
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        
+        # Apply action mask by setting probabilities of invalid actions to near-zero
+        if hasattr(distribution, "distribution") and hasattr(distribution.distribution, "probs"):
+            # For categorical distributions (typical for discrete action spaces)
+            masked_probs = distribution.distribution.probs * action_mask
+            masked_probs = masked_probs / (masked_probs.sum() + 1e-10)  # Normalize
+            distribution.distribution.probs = masked_probs
+            
+        # Choose action
+        if deterministic:
+            if hasattr(distribution, "mode"):
+                actions = distribution.mode()
+            else:
+                # For categorical, use argmax of masked probs
+                actions = torch.argmax(masked_probs, dim=1)
+        else:
+            actions = distribution.sample()
+            
+        return actions
+
