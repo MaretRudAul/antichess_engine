@@ -28,7 +28,7 @@ TRAINING_PARAMS = {
     "opponent": "random",  # Opponent strategy during training
     "eval_freq": 10000,  # How often to evaluate the agent
     "n_eval_episodes": 50,  # Number of episodes for evaluation
-    "checkpoint_freq": 1,  # How often to save model checkpoints
+    "checkpoint_freq": 10000,  # How often to save model checkpoints
 }
 
 # Evaluation Configuration

@@ -66,7 +66,9 @@ def main():
     # Create evaluation environment
     eval_env = make_vec_env(
         lambda: AntichessEnv(opponent="heuristic"),  # Evaluate against stronger opponent
-        n_envs=1
+        n_envs=1,
+        vec_env_cls=SubprocVecEnv,  # Use the same vectorization as training env
+        monitor_dir=os.path.join(log_dir, "eval")
     )
     
     # Define callbacks
