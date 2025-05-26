@@ -160,6 +160,28 @@ class MaskedActorCriticPolicy(ActorCriticPolicy):
     provided with the observations.
     """
     
+    def _get_latent(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get latent features from the observation.
+        
+        Args:
+            obs: The observation tensor or dictionary
+            
+        Returns:
+            Tuple of (policy_features, value_features)
+        """
+        # Extract just the observations if dictionary was passed
+        if isinstance(obs, dict):
+            observations = obs["observation"] if "observation" in obs else obs
+        else:
+            observations = obs
+            
+        # Use the parent class's feature extractor
+        features = self.extract_features(observations)
+        latent_pi = self.mlp_extractor.policy_net(features)
+        latent_vf = self.mlp_extractor.value_net(features)
+        return latent_pi, latent_vf
+    
     def forward(
         self, 
         obs: Union[torch.Tensor, Dict[str, torch.Tensor]],
@@ -179,12 +201,12 @@ class MaskedActorCriticPolicy(ActorCriticPolicy):
         # Extract observation and action mask
         if isinstance(obs, dict):
             action_mask = obs.get("action_mask", None)
-            observations = obs["observation"]
+            observations = obs["observation"] if "observation" in obs else obs
         else:
             action_mask = None
             observations = obs
             
-        # Get latent features
+        # Get latent features using our implemented method
         latent_pi, latent_vf = self._get_latent(observations)
         
         # Get action distribution
