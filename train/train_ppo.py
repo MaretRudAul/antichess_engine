@@ -1,4 +1,5 @@
 import os
+import zipfile
 import numpy as np
 import gymnasium as gym
 from datetime import datetime
@@ -85,7 +86,112 @@ def main():
         name_prefix="antichess_model"
     )
     
-    # Create and train the PPO agent
+    # Check for existing checkpoints
+    latest_checkpoint = find_latest_checkpoint()
+    
+    if latest_checkpoint:
+        print(f"Found existing checkpoint: {latest_checkpoint}")
+        print("Resuming training from checkpoint...")
+        try:
+            model = PPO.load(
+                latest_checkpoint,
+                env=env,
+                custom_objects={"policy_class": MaskedActorCriticPolicy},
+                tensorboard_log=log_dir
+            )
+            # Extract the total_timesteps already trained
+            trained_steps = extract_steps_from_checkpoint(latest_checkpoint)
+            remaining_steps = max(0, TRAINING_PARAMS["total_timesteps"] - trained_steps)
+            print(f"Already trained for {trained_steps} steps. Continuing for {remaining_steps} more steps.")
+        except (zipfile.BadZipFile, ValueError, EOFError) as e:
+            print(f"Error loading checkpoint: {e}")
+            print("Starting fresh training instead.")
+            model = create_new_model(env, log_dir)
+            remaining_steps = TRAINING_PARAMS["total_timesteps"]
+    else:
+        print("No checkpoint found. Starting new training...")
+        model = create_new_model(env, log_dir)
+        remaining_steps = TRAINING_PARAMS["total_timesteps"]
+    
+    print(f"Training PPO agent for {remaining_steps} steps...")
+
+    callbacks = [
+        checkpoint_callback,
+        eval_callback
+    ]
+    
+    model.learn(
+        total_timesteps=remaining_steps,
+        callback=callbacks,
+        progress_bar=True,
+        reset_num_timesteps=False  # Important to continue counting from where we left off
+    )
+    
+    # Save the final model
+    final_model_path = os.path.join(model_dir, "final_model")
+    model.save(final_model_path)
+    print(f"Training complete. Final model saved to {final_model_path}")
+
+def find_latest_checkpoint() -> str:
+    """
+    Find the most recent valid checkpoint file.
+    
+    Returns:
+        Path to the latest valid checkpoint file or None if not found
+    """
+    models_dir = "models"
+    if not os.path.exists(models_dir):
+        return None
+    
+    # Look for all checkpoint files
+    checkpoint_paths = []
+    for root, dirs, files in os.walk(models_dir):
+        for file in files:
+            if file.endswith(".zip") and "antichess_model" in file:
+                full_path = os.path.join(root, file)
+                # Verify this is a valid zip file
+                try:
+                    with zipfile.ZipFile(full_path, 'r') as zip_ref:
+                        # Just checking if it's a valid zip - no need to extract
+                        pass
+                    checkpoint_paths.append(full_path)
+                except zipfile.BadZipFile:
+                    print(f"Warning: Found corrupted checkpoint file {full_path}, skipping")
+                    continue
+    
+    if not checkpoint_paths:
+        return None
+    
+    # Sort by modification time (most recent first)
+    checkpoint_paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    return checkpoint_paths[0]
+
+def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
+    """
+    Extract the number of timesteps from a checkpoint filename.
+    If can't extract, return a conservative estimate.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        
+    Returns:
+        Number of timesteps trained
+    """
+    try:
+        # Try to extract the timestep from the filename (format: antichess_model_XXXXXXX_steps.zip)
+        filename = os.path.basename(checkpoint_path)
+        parts = filename.split('_')
+        if len(parts) >= 3 and parts[-1].endswith('.zip'):
+            steps = int(parts[-1].replace('.zip', ''))
+            return steps
+    except:
+        pass
+    
+    # If extraction fails, return a conservative estimate based on checkpoint frequency
+    return TRAINING_PARAMS["checkpoint_freq"]
+
+def create_new_model(env, log_dir):
+    """Create a new PPO model with the configured parameters"""
     print("Creating PPO agent...")
     
     policy_kwargs = {
@@ -94,7 +200,7 @@ def main():
         "net_arch": PPO_PARAMS["net_arch"]
     }
     
-    model = PPO(
+    return PPO(
         policy=MaskedActorCriticPolicy,
         env=env,
         learning_rate=PPO_PARAMS["learning_rate"],
@@ -112,24 +218,6 @@ def main():
         policy_kwargs=policy_kwargs,
         tensorboard_log=log_dir
     )
-    
-    print(f"Training PPO agent for {TRAINING_PARAMS['total_timesteps']} steps...")
-
-    callbacks = [
-        checkpoint_callback,
-        eval_callback
-    ]
-    
-    model.learn(
-        total_timesteps=TRAINING_PARAMS["total_timesteps"],
-        callback=callbacks,
-        progress_bar=True
-    )
-    
-    # Save the final model
-    final_model_path = os.path.join(model_dir, "final_model")
-    model.save(final_model_path)
-    print(f"Training complete. Final model saved to {final_model_path}")
 
 if __name__ == "__main__":
     main()
