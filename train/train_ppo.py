@@ -2,7 +2,6 @@ import os
 import numpy as np
 import gymnasium as gym
 from datetime import datetime
-from tqdm.auto import tqdm
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback, BaseCallback
@@ -17,26 +16,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
 from config import PPO_PARAMS, TRAINING_PARAMS
-
-class TqdmCallback(BaseCallback):
-    """
-    Custom callback for plotting progress bar with tqdm.
-    """
-    def __init__(self, total_timesteps: int, verbose=1):
-        super().__init__(verbose)
-        self.pbar = None
-        self.total_timesteps = total_timesteps
-        
-    def _on_training_start(self):
-        self.pbar = tqdm(total=self.total_timesteps, desc="Training Progress")
-
-    def _on_step(self):
-        self.pbar.update(self.n_calls - self.pbar.n)
-        return True
-    
-    def _on_training_end(self):
-        self.pbar.close()
-        self.pbar = None
 
 def make_env(rank, opponent="random", seed=0):
     """
@@ -137,7 +116,6 @@ def main():
     print(f"Training PPO agent for {TRAINING_PARAMS['total_timesteps']} steps...")
 
     callbacks = [
-        TqdmCallback(total_timesteps=TRAINING_PARAMS["total_timesteps"]),
         checkpoint_callback,
         eval_callback
     ]
