@@ -1,5 +1,3 @@
-# File: antichess/board.py
-
 import numpy as np
 from typing import List, Tuple, Optional, Dict, Set
 from enum import Enum, auto
