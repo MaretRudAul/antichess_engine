@@ -1,6 +1,6 @@
-import gym
+import gymnasium as gym
 import numpy as np
-from gym import spaces
+from gymnasium import spaces
 from typing import Dict, Any, Tuple, Optional
 
 from antichess.board import AntichessBoard, Move, Player
@@ -49,24 +49,42 @@ class AntichessEnv(gym.Env):
         self.done = False
         self.opponent = opponent
         self.player_color = Player.WHITE  # The agent always plays as WHITE
+
+    def seed(self, seed=None):
+        """
+        Set the seed for this environment's random number generator.
         
-    def reset(self) -> np.ndarray:
+        Args:
+            seed: The seed value
+        """
+        np.random.seed(seed)
+        return [seed]
+        
+    def reset(self, *, seed=None, options=None) -> Tuple[np.ndarray, dict]:
         """
         Reset the environment to start a new game.
         
+        Args:
+            seed: An optional seed for random number generation
+            options: Additional options for resetting
+            
         Returns:
-            The initial observation
+            Tuple of (observation, info)
         """
+        # Set seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+        
         self.board = AntichessBoard()
         self.done = False
         
         # If the agent is BLACK, make an opponent move first
         if self.player_color == Player.BLACK and self.board.current_player == Player.WHITE:
             self._make_opponent_move()
-            
-        return self._get_observation()
+        
+        return self._get_observation(), {}  # Return observation and empty info dict
     
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
         Take a step in the environment by making a move.
         
@@ -76,15 +94,15 @@ class AntichessEnv(gym.Env):
         Returns:
             observation: The next board state
             reward: The reward for the action
-            done: Whether the episode is over
+            terminated: Whether the episode is terminated
+            truncated: Whether the episode is truncated
             info: Additional information
         """
         if self.done:
-            return self._get_observation(), 0.0, self.done, {}
+            return self._get_observation(), 0.0, True, False, {}
         
         # Get the legal moves
         legal_moves = self.board.get_legal_moves()
-        legal_actions = [action_to_move(self.board, action) for action in range(4096)]
         
         # Try to make the move
         move = action_to_move(self.board, action)
@@ -98,7 +116,7 @@ class AntichessEnv(gym.Env):
                 self.done = True
                 winner = self.board.get_winner()
                 reward = 1.0 if winner == self.player_color else -1.0
-                return self._get_observation(), reward, self.done, {"winner": winner}
+                return self._get_observation(), reward, True, False, {"winner": winner}
             
             # Make opponent's move if the game is not over
             self._make_opponent_move()
@@ -108,14 +126,14 @@ class AntichessEnv(gym.Env):
                 self.done = True
                 winner = self.board.get_winner()
                 reward = 1.0 if winner == self.player_color else -1.0
-                return self._get_observation(), reward, self.done, {"winner": winner}
+                return self._get_observation(), reward, True, False, {"winner": winner}
                 
             # Game continues
-            return self._get_observation(), 0.0, self.done, {}
+            return self._get_observation(), 0.0, False, False, {}
         else:
             # Illegal move - in a real game this would forfeit, but for RL we'll just give a negative reward
             self.done = True
-            return self._get_observation(), -1.0, self.done, {"illegal_move": True}
+            return self._get_observation(), -1.0, True, False, {"illegal_move": True}
     
     def render(self, mode="human"):
         """

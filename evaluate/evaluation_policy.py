@@ -43,14 +43,15 @@ def evaluate_policy(model_path, n_episodes=100, render=False, opponent="random")
     print(f"Evaluating model against {opponent} opponent for {n_episodes} episodes...")
     
     for episode in tqdm(range(n_episodes)):
-        obs = env.reset()
+        obs, _ = env.reset()
         done = False
         episode_reward = 0
         steps = 0
         
         while not done:
             action, _states = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             episode_reward += reward
             steps += 1
             

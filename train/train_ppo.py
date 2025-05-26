@@ -1,7 +1,8 @@
 import os
 import numpy as np
-import gym
+import gymnasium as gym
 from datetime import datetime
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
@@ -38,6 +39,9 @@ def make_env(rank, opponent="random", seed=0):
 def main():
     """Train a PPO agent to play Antichess."""
     print("Starting Antichess PPO training...")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     
     # Create output directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
