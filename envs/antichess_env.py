@@ -201,7 +201,7 @@ class AntichessEnv(gym.Env):
                 PieceType.BISHOP: 3,
                 PieceType.ROOK: 5,
                 PieceType.QUEEN: 9,
-                PieceType.KING: 0  # In Antichess, losing the king is good
+                PieceType.KING: 0
             }
             
             best_move = max(capturing_moves, key=lambda move: 

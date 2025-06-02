@@ -9,6 +9,7 @@ from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback,
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.logger import configure
 
 import sys
 import os
@@ -17,6 +18,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
 from config import PPO_PARAMS, TRAINING_PARAMS
+
+# Remove the MonitorCallback class entirely - SB3's built-in logging handles this
 
 def make_env(rank, opponent="random", seed=0):
     """
@@ -36,6 +39,41 @@ def make_env(rank, opponent="random", seed=0):
         env = Monitor(env)
         return env
     return _init
+
+def create_new_model(env, log_dir):
+    """Create a new PPO model with the configured parameters"""
+    print("Creating PPO agent...")
+    
+    policy_kwargs = {
+        "features_extractor_class": ChessCNN,
+        "features_extractor_kwargs": dict(features_dim=256),
+        "net_arch": PPO_PARAMS["net_arch"]
+    }
+    
+    model = PPO(
+        policy=MaskedActorCriticPolicy,
+        env=env,
+        learning_rate=PPO_PARAMS["learning_rate"],
+        n_steps=PPO_PARAMS["n_steps"],
+        batch_size=PPO_PARAMS["batch_size"],
+        n_epochs=PPO_PARAMS["n_epochs"],
+        gamma=PPO_PARAMS["gamma"],
+        gae_lambda=PPO_PARAMS["gae_lambda"],
+        clip_range=PPO_PARAMS["clip_range"],
+        clip_range_vf=PPO_PARAMS["clip_range_vf"],
+        ent_coef=PPO_PARAMS["ent_coef"],
+        vf_coef=PPO_PARAMS["vf_coef"],
+        max_grad_norm=PPO_PARAMS["max_grad_norm"],
+        verbose=1,
+        policy_kwargs=policy_kwargs,
+        tensorboard_log=log_dir
+    )
+    
+    # Configure comprehensive logging including CSV output
+    new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
+    model.set_logger(new_logger)
+    
+    return model
 
 def main():
     """Train a PPO agent to play Antichess."""
@@ -63,11 +101,11 @@ def main():
         monitor_dir=log_dir
     )
     
-    # Create evaluation environment
+    # Create evaluation environment - use same vectorization to avoid warning
     eval_env = make_vec_env(
-        lambda: AntichessEnv(opponent="heuristic"),  # Evaluate against stronger opponent
+        lambda: AntichessEnv(opponent="heuristic"),
         n_envs=1,
-        vec_env_cls=SubprocVecEnv,  # Use the same vectorization as training env
+        vec_env_cls=SubprocVecEnv,  # Match training env type
         monitor_dir=os.path.join(log_dir, "eval")
     )
     
@@ -101,7 +139,10 @@ def main():
                 custom_objects={"policy_class": MaskedActorCriticPolicy},
                 tensorboard_log=log_dir
             )
-            # Extract the total_timesteps already trained
+            # Configure logging for resumed model
+            new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
+            model.set_logger(new_logger)
+            
             trained_steps = extract_steps_from_checkpoint(latest_checkpoint)
             remaining_steps = max(0, TRAINING_PARAMS["total_timesteps"] - trained_steps)
             print(f"Already trained for {trained_steps} steps. Continuing for {remaining_steps} more steps.")
@@ -120,19 +161,24 @@ def main():
     callbacks = [
         checkpoint_callback,
         eval_callback
+        # Removed monitor_callback - using built-in logging instead
     ]
     
     model.learn(
         total_timesteps=remaining_steps,
         callback=callbacks,
         progress_bar=True,
-        reset_num_timesteps=False  # Important to continue counting from where we left off
+        reset_num_timesteps=False
     )
     
     # Save the final model
     final_model_path = os.path.join(model_dir, "final_model")
     model.save(final_model_path)
     print(f"Training complete. Final model saved to {final_model_path}")
+    
+    # Print location of metrics for easy access
+    print(f"Training metrics saved to: {log_dir}/progress.csv")
+    print(f"TensorBoard logs: {log_dir}")
 
 def find_latest_checkpoint() -> str:
     """
