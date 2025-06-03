@@ -40,40 +40,6 @@ def make_env(rank, opponent="random", seed=0):
         return env
     return _init
 
-def create_new_model(env, log_dir):
-    """Create a new PPO model with the configured parameters"""
-    print("Creating PPO agent...")
-    
-    policy_kwargs = {
-        "features_extractor_class": ChessCNN,
-        "features_extractor_kwargs": dict(features_dim=256),
-        "net_arch": PPO_PARAMS["net_arch"]
-    }
-    
-    model = PPO(
-        policy=MaskedActorCriticPolicy,
-        env=env,
-        learning_rate=PPO_PARAMS["learning_rate"],
-        n_steps=PPO_PARAMS["n_steps"],
-        batch_size=PPO_PARAMS["batch_size"],
-        n_epochs=PPO_PARAMS["n_epochs"],
-        gamma=PPO_PARAMS["gamma"],
-        gae_lambda=PPO_PARAMS["gae_lambda"],
-        clip_range=PPO_PARAMS["clip_range"],
-        clip_range_vf=PPO_PARAMS["clip_range_vf"],
-        ent_coef=PPO_PARAMS["ent_coef"],
-        vf_coef=PPO_PARAMS["vf_coef"],
-        max_grad_norm=PPO_PARAMS["max_grad_norm"],
-        verbose=1,
-        policy_kwargs=policy_kwargs,
-        tensorboard_log=log_dir
-    )
-    
-    # Configure comprehensive logging including CSV output
-    new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
-    model.set_logger(new_logger)
-    
-    return model
 
 def main():
     """Train a PPO agent to play Antichess."""
@@ -149,11 +115,11 @@ def main():
         except (zipfile.BadZipFile, ValueError, EOFError) as e:
             print(f"Error loading checkpoint: {e}")
             print("Starting fresh training instead.")
-            model = create_new_model(env, log_dir)
+            model = create_new_model(env, log_dir, device=device)
             remaining_steps = TRAINING_PARAMS["total_timesteps"]
     else:
         print("No checkpoint found. Starting new training...")
-        model = create_new_model(env, log_dir)
+        model = create_new_model(env, log_dir, device=device)
         remaining_steps = TRAINING_PARAMS["total_timesteps"]
     
     print(f"Training PPO agent for {remaining_steps} steps...")
@@ -244,34 +210,25 @@ def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
     # If extraction fails, return a conservative estimate based on checkpoint frequency
     return TRAINING_PARAMS["checkpoint_freq"]
 
-def create_new_model(env, log_dir):
+def create_new_model(env, log_dir, device="cpu"):
     """Create a new PPO model with the configured parameters"""
     print("Creating PPO agent...")
     
-    policy_kwargs = {
-        "features_extractor_class": ChessCNN,
-        "features_extractor_kwargs": dict(features_dim=256),
-        "net_arch": PPO_PARAMS["net_arch"]
-    }
-    
-    return PPO(
-        policy=MaskedActorCriticPolicy,
-        env=env,
-        learning_rate=PPO_PARAMS["learning_rate"],
-        n_steps=PPO_PARAMS["n_steps"],
-        batch_size=PPO_PARAMS["batch_size"],
-        n_epochs=PPO_PARAMS["n_epochs"],
-        gamma=PPO_PARAMS["gamma"],
-        gae_lambda=PPO_PARAMS["gae_lambda"],
-        clip_range=PPO_PARAMS["clip_range"],
-        clip_range_vf=PPO_PARAMS["clip_range_vf"],
-        ent_coef=PPO_PARAMS["ent_coef"],
-        vf_coef=PPO_PARAMS["vf_coef"],
-        max_grad_norm=PPO_PARAMS["max_grad_norm"],
-        verbose=1,
-        policy_kwargs=policy_kwargs,
-        tensorboard_log=log_dir
+    model = PPO(
+        MaskedActorCriticPolicy,
+        env,
+        **PPO_PARAMS,
+        tensorboard_log=log_dir,
+        device=device,
+        verbose=1
     )
+
+    # Configure comprehensive logging including CSV output
+    new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
+    model.set_logger(new_logger)
+    
+    return model
+
 
 if __name__ == "__main__":
     main()
