@@ -23,7 +23,7 @@ PPO_PARAMS = {
 
 # Training Configuration
 TRAINING_PARAMS = {
-    "total_timesteps": 10_000_000,  # Total timesteps to train for
+    "total_timesteps": 1_000_000,  # Total timesteps to train for
     "num_envs": 8,  # Number of parallel environments
     "opponent": "random",  # Opponent strategy during training
     "eval_freq": 10000,  # How often to evaluate the agent

@@ -1,7 +1,9 @@
 ### Antichess Reinforcement Learning with PPO
+
 This project implements a reinforcement learning agent for the chess variant "Antichess". In Antichess, the goal is to lose all your pieces or have no legal moves. Captures are mandatory.
 
 ### Project Structure
+
 ```
 antichess_engine/
 ├── antichess/           # Game logic and rules
@@ -24,7 +26,9 @@ antichess_engine/
 ├── requirements.txt
 └── README.md
 ```
+
 ### Installation
+
 ```python3
 # Clone the repository
 git clone https://github.com/username/antichess_engine.git
@@ -36,6 +40,7 @@ pip install -r requirements.txt
 ```
 
 ### Usage
+
 Training a New Agent
 
 ```python3
@@ -53,6 +58,7 @@ python -m evaluate.evaluate_policy --model models/final_model.zip --episodes 100
 This will evaluate the trained model against different opponents and generate performance statistics.
 
 ### Approach
+
 This project uses:
 
 1. **Custom Gym Environment**: An OpenAI Gym-compatible environment for Antichess with a 13-plane board representation.
@@ -64,6 +70,7 @@ This project uses:
 4. **Action Masking**: Ensures the agent only selects legal moves, greatly improving sample efficiency.
 
 ### Hyperparameters
+
 The key hyperparameters can be adjusted in config.py:
 
 - Learning rate: 3e-4
@@ -72,6 +79,7 @@ The key hyperparameters can be adjusted in config.py:
 - Discount factor (gamma): 0.99
 
 ### Antichess Rules
+
 Antichess differs from standard chess in several ways:
 
 - The goal is to lose all pieces or have no legal moves
@@ -81,7 +89,8 @@ Antichess differs from standard chess in several ways:
 - Pawns can promote to any piece
 
 ### Future Work
+
 - Implement self-play training
-- Add more sophisticated opponents
-- Experiment with alternative neural network architectures
+- Add hyperparameter optimization
+- Train thoroughly to attain real results
 - Integrate with a chess GUI for human vs. AI play
