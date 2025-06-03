@@ -17,7 +17,7 @@ class ChessCNN(BaseFeaturesExtractor):
     3. Policy and value heads
     """
     
-    def __init__(self, observation_space: gym.spaces.Box, features_dim: int = 256):
+    def __init__(self, observation_space: gym.spaces.Space, features_dim: int = 256):
         """
         Initialize the CNN.
         
@@ -27,10 +27,17 @@ class ChessCNN(BaseFeaturesExtractor):
         """
         super(ChessCNN, self).__init__(observation_space, features_dim)
         
-        # Input is a 13x8x8 tensor (12 piece planes + 1 turn plane)
-        n_input_channels = observation_space.shape[0]
+        # Handle Dict observation space
+        if isinstance(observation_space, gym.spaces.Dict):
+            # Extract the Box space with the actual observation
+            actual_observation_space = observation_space["observation"]
+        else:
+            actual_observation_space = observation_space
         
-        # Define the CNN feature extractor
+        # Input is a 13x8x8 tensor (12 piece planes + 1 turn plane)
+        n_input_channels = actual_observation_space.shape[0]
+        
+        # CNN implementation
         self.cnn = nn.Sequential(
             # Initial convolutional layer
             nn.Conv2d(n_input_channels, 64, kernel_size=3, padding=1),
@@ -75,11 +82,15 @@ class ChessCNN(BaseFeaturesExtractor):
         Extract features from observations.
         
         Args:
-            observations: Batch of observations
+            observations: Batch of observations (can be dict or tensor)
             
         Returns:
             Tensor of extracted features
         """
+        # If observations is a dict, extract the actual observation tensor
+        if isinstance(observations, dict):
+            observations = observations["observation"]
+            
         features = self.cnn(observations)
         return self.fc(features)
 
@@ -160,7 +171,7 @@ class MaskedActorCriticPolicy(ActorCriticPolicy):
     provided with the observations.
     """
     
-    def _get_latent(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _get_latent(self, obs: Union[torch.Tensor, Dict[str, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Get latent features from the observation.
         
@@ -170,14 +181,7 @@ class MaskedActorCriticPolicy(ActorCriticPolicy):
         Returns:
             Tuple of (policy_features, value_features)
         """
-        # Extract just the observations if dictionary was passed
-        if isinstance(obs, dict):
-            observations = obs["observation"] if "observation" in obs else obs
-        else:
-            observations = obs
-            
-        # Use the parent class's feature extractor
-        features = self.extract_features(observations)
+        features = self.extract_features(obs)
         latent_pi = self.mlp_extractor.policy_net(features)
         latent_vf = self.mlp_extractor.value_net(features)
         return latent_pi, latent_vf
@@ -201,25 +205,29 @@ class MaskedActorCriticPolicy(ActorCriticPolicy):
         # Extract observation and action mask
         if isinstance(obs, dict):
             action_mask = obs.get("action_mask", None)
-            observations = obs["observation"] if "observation" in obs else obs
+            # Convert action_mask to tensor if it's numpy
+            if action_mask is not None and isinstance(action_mask, np.ndarray):
+                action_mask = torch.from_numpy(action_mask).float()
         else:
             action_mask = None
-            observations = obs
             
-        # Get latent features using our implemented method
-        latent_pi, latent_vf = self._get_latent(observations)
+        # Get latent features
+        latent_pi, latent_vf = self._get_latent(obs)
         
         # Get action distribution
         distribution = self._get_action_dist_from_latent(latent_pi)
         
         # Apply action mask if provided
         if action_mask is not None:
-            # Zero out logits for invalid actions
+            # Make sure action_mask is on the same device as the logits
             if hasattr(distribution, "distribution") and hasattr(distribution.distribution, "logits"):
-                # Add a small negative number to logits for masked actions
-                # This makes their probability nearly zero after softmax
+                device = distribution.distribution.logits.device
+                action_mask = action_mask.to(device)
+                
+                # Apply mask by setting invalid actions to very negative values
                 masked_logits = distribution.distribution.logits.clone()
-                masked_logits = masked_logits + torch.log(action_mask + 1e-10)
+                # Where action_mask is 0, set logits to very negative values
+                masked_logits = torch.where(action_mask > 0, masked_logits, torch.full_like(masked_logits, -1e8))
                 distribution.distribution.logits = masked_logits
         
         # Sample actions

@@ -37,9 +37,14 @@ class AntichessEnv(gym.Env):
         super().__init__()
         
         # There are 13 planes: 6 for white pieces, 6 for black pieces, 1 for turn
-        self.observation_space = spaces.Box(
-            low=0, high=1, shape=(13, 8, 8), dtype=np.float32
-        )
+        self.observation_space = gym.spaces.Dict({
+            "observation": spaces.Box(
+                low=0, high=1, shape=(13, 8, 8), dtype=np.float32
+            ),
+            "action_mask": spaces.Box(
+                low=0, high=1, shape=(4096,), dtype=np.float32
+            )
+        })
         
         # The action space is 64*64=4096 possible moves
         # Each index represents a source and target square
@@ -60,7 +65,7 @@ class AntichessEnv(gym.Env):
         np.random.seed(seed)
         return [seed]
         
-    def reset(self, *, seed=None, options=None) -> Tuple[np.ndarray, dict]:
+    def reset(self, *, seed=None, options=None) -> Tuple[Dict, dict]:
         """
         Reset the environment to start a new game.
         
@@ -82,7 +87,24 @@ class AntichessEnv(gym.Env):
         if self.player_color == Player.BLACK and self.board.current_player == Player.WHITE:
             self._make_opponent_move()
         
-        return self._get_observation(), {}  # Return observation and empty info dict
+        observation = self._get_observation()
+        # print(f"Reset observation shape: {observation['observation'].shape}")
+        # print(f"Non-zero elements: {np.count_nonzero(observation['observation'])}/{observation['observation'].size}")
+        return observation, {}  # Return observation and empty info dict
+
+    def calculate_reward(self, winner):
+        if self.done:
+            if winner == self.player_color:
+                return 1.0  # Win
+            else:
+                return -1.0  # Loss
+        
+        # Smaller rewards during gameplay
+        pieces_captured = self.previous_piece_count - len(self.board.piece_map())
+        if pieces_captured > 0:
+            return 0.01 * pieces_captured  # Small reward for forcing captures
+        
+        return 0  # No special event
     
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
@@ -101,14 +123,20 @@ class AntichessEnv(gym.Env):
         if self.done:
             return self._get_observation(), 0.0, True, False, {}
         
-        # Get the legal moves
-        legal_moves = self.board.get_legal_moves()
+        # Get the action mask for legal moves
+        action_mask = self.get_action_mask()
         
-        # Try to make the move
+        # Convert action index to chess move
         move = action_to_move(self.board, action)
         
-        # Check if move is legal
-        if move in legal_moves:
+        # Debug information using the action mask
+        is_legal = action_mask[action] == 1.0
+        # print(f"Agent action: {action}, Move: {move}, Legal: {is_legal}")
+        legal_moves_count = int(np.sum(action_mask))
+        # print(f"Available legal moves: {legal_moves_count}")
+        
+        # Check if move is legal using the mask
+        if action_mask[action] == 1.0:
             self.board.make_move(move)
             
             # Check if game is over after the agent's move
@@ -125,7 +153,7 @@ class AntichessEnv(gym.Env):
             if self.board.is_game_over():
                 self.done = True
                 winner = self.board.get_winner()
-                reward = 1.0 if winner == self.player_color else -1.0
+                reward = self.calculate_reward(winner)
                 return self._get_observation(), reward, True, False, {"winner": winner}
                 
             # Game continues
@@ -157,14 +185,17 @@ class AntichessEnv(gym.Env):
         """Close the environment."""
         pass
     
-    def _get_observation(self) -> np.ndarray:
+    def _get_observation(self):
         """
-        Get the observation tensor for the current state.
+        Get the observation with action mask.
         
         Returns:
-            A 13x8x8 tensor representing the board state
+            Dictionary with observation and action mask
         """
-        return encode_board(self.board)
+        return {
+            "observation": encode_board(self.board),
+            "action_mask": self.get_action_mask()
+        }
     
     def _make_opponent_move(self) -> None:
         """Make a move for the opponent based on the selected strategy."""

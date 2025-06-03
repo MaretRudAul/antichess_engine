@@ -7,15 +7,15 @@ This file centralizes all hyperparameters and constants.
 
 # PPO Algorithm Hyperparameters
 PPO_PARAMS = {
-    "learning_rate": 3e-4,  # Learning rate
-    "n_steps": 2048,  # Number of steps to collect before updating
-    "batch_size": 64,  # Minibatch size for updates
+    "learning_rate": 1e-4,  # Learning rate
+    "n_steps": 512,  # Number of steps to collect before updating
+    "batch_size": 32,  # Minibatch size for updates
     "n_epochs": 10,  # Number of policy update epochs per update
     "gamma": 0.99,  # Discount factor
     "gae_lambda": 0.95,  # GAE lambda parameter
     "clip_range": 0.2,  # PPO clipping parameter
     "clip_range_vf": 0.2,  # Value function clipping parameter
-    "ent_coef": 0.01,  # Entropy coefficient (higher = more exploration)
+    "ent_coef": 0.05,  # Entropy coefficient (higher = more exploration)
     "vf_coef": 0.5,  # Value function coefficient
     "max_grad_norm": 0.5,  # Gradient clipping for numerical stability
     "net_arch": [256, 256],  # Policy/value network architecture (shared layers)
