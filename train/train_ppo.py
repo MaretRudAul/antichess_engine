@@ -87,7 +87,7 @@ def main():
     log_dir = f"logs/antichess_ppo_{timestamp}"
     os.makedirs(log_dir, exist_ok=True)
     
-    model_dir = f"models/antichess_ppo_{timestamp}"
+    model_dir = f"trained_models/antichess_ppo_{timestamp}"
     os.makedirs(model_dir, exist_ok=True)
     
     # Create vectorized environments
@@ -164,12 +164,18 @@ def main():
         # Removed monitor_callback - using built-in logging instead
     ]
     
-    model.learn(
-        total_timesteps=remaining_steps,
-        callback=callbacks,
-        progress_bar=True,
-        reset_num_timesteps=False
-    )
+    try:
+        model.learn(
+            total_timesteps=remaining_steps,
+            callback=callbacks,
+            progress_bar=True,
+            reset_num_timesteps=False
+        )
+    except KeyboardInterrupt:
+        print("\nTraining interrupted! Saving current model state...")
+        interrupted_model_path = os.path.join(model_dir, f"antichess_ppo_{timestamp}_interrupted_model")
+        model.save(interrupted_model_path)
+        print(f"Model saved to {interrupted_model_path}")
     
     # Save the final model
     final_model_path = os.path.join(model_dir, "final_model")
@@ -187,7 +193,7 @@ def find_latest_checkpoint() -> str:
     Returns:
         Path to the latest valid checkpoint file or None if not found
     """
-    models_dir = "models"
+    models_dir = "trained_models"
     if not os.path.exists(models_dir):
         return None
     
