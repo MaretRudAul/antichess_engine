@@ -5,6 +5,7 @@ import time
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from stable_baselines3 import PPO
+import torch
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,8 +27,20 @@ def evaluate_policy(model_path, n_episodes=100, render=False, opponent="random")
     Returns:
         Evaluation statistics
     """
-    # Load the trained model
-    model = PPO.load(model_path, custom_objects={"policy": MaskedActorCriticPolicy})
+    # Load the trained model with correct policy class
+    print(f"Loading model from {model_path}")
+    try:
+        model = PPO.load(
+            model_path, 
+            custom_objects={
+                "policy_class": MaskedActorCriticPolicy,
+                "policy": MaskedActorCriticPolicy
+            }
+        )
+        print("Model loaded successfully")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return None
     
     # Create the environment
     env = AntichessEnv(opponent=opponent)
@@ -48,8 +61,27 @@ def evaluate_policy(model_path, n_episodes=100, render=False, opponent="random")
         episode_reward = 0
         steps = 0
         
+        # Debug first episode
+        if episode == 0:
+            print(f"First episode observation type: {type(obs)}")
+            if isinstance(obs, dict):
+                print(f"Observation keys: {obs.keys()}")
+                print(f"Observation shape: {obs['observation'].shape}")
+                print(f"Action mask shape: {obs['action_mask'].shape}")
+                print(f"Legal moves count: {np.sum(obs['action_mask'])}")
+        
         while not done:
-            action, _states = model.predict(obs, deterministic=True)
+            # Apply action masking manually for evaluation
+            action = predict_with_mask(model, obs, deterministic=True)
+            
+            # Debug first few moves
+            if episode == 0 and steps < 3:
+                action_mask = obs['action_mask'] if isinstance(obs, dict) else None
+                if action_mask is not None:
+                    is_legal = action_mask[action] == 1.0
+                    legal_count = np.sum(action_mask)
+                    print(f"Step {steps}: Action {action}, Legal: {is_legal}, Legal moves: {legal_count}")
+            
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             episode_reward += reward
@@ -59,9 +91,18 @@ def evaluate_policy(model_path, n_episodes=100, render=False, opponent="random")
                 env.render()
                 time.sleep(0.3)  # Slow down rendering
             
+            # Safety check - prevent infinite episodes
+            if steps > 200:  # Reasonable upper bound for Antichess
+                print(f"Episode {episode} exceeded 200 steps, terminating")
+                done = True
+                draws += 1
+                break
+            
             if done:
                 if "illegal_move" in info and info["illegal_move"]:
                     illegal_moves += 1
+                    if episode < 5:  # Debug first few episodes
+                        print(f"Episode {episode}: Illegal move detected at step {steps}")
                 elif "winner" in info:
                     if info["winner"] == env.player_color:
                         wins += 1
@@ -74,6 +115,10 @@ def evaluate_policy(model_path, n_episodes=100, render=False, opponent="random")
         
         episode_lengths.append(steps)
         rewards.append(episode_reward)
+        
+        # Debug first few episodes
+        if episode < 5:
+            print(f"Episode {episode}: {steps} steps, reward: {episode_reward}")
     
     # Calculate statistics
     win_rate = wins / n_episodes * 100
@@ -90,6 +135,7 @@ def evaluate_policy(model_path, n_episodes=100, render=False, opponent="random")
     print(f"Illegal moves: {illegal_rate:.2f}%")
     print(f"Average episode length: {avg_episode_length:.2f}")
     print(f"Average reward: {avg_reward:.2f}")
+    print(f"Episode length range: {min(episode_lengths)} - {max(episode_lengths)}")
     
     stats = {
         "win_rate": win_rate,
@@ -103,6 +149,48 @@ def evaluate_policy(model_path, n_episodes=100, render=False, opponent="random")
     }
     
     return stats
+
+def predict_with_mask(model, obs, deterministic=True):
+    """
+    Make a prediction using the model while respecting action masks.
+    
+    Args:
+        model: The trained PPO model
+        obs: Observation (should be a dict with 'observation' and 'action_mask')
+        deterministic: Whether to use deterministic action selection
+        
+    Returns:
+        Selected action index
+    """
+    if not isinstance(obs, dict) or 'action_mask' not in obs:
+        # Fallback to standard prediction if no mask available
+        action, _ = model.predict(obs, deterministic=deterministic)
+        return action
+    
+    # Convert observations to tensors
+    device = next(model.policy.parameters()).device
+    
+    # Handle single observation (not batched)
+    obs_tensor = {}
+    for key, value in obs.items():
+        if isinstance(value, np.ndarray):
+            # Add batch dimension if needed
+            if value.ndim == len(model.observation_space[key].shape):
+                value = np.expand_dims(value, axis=0)
+            obs_tensor[key] = torch.from_numpy(value).float().to(device)
+        else:
+            obs_tensor[key] = value
+    
+    # Use the policy's forward method directly
+    with torch.no_grad():
+        actions, values, log_probs = model.policy.forward(obs_tensor, deterministic=deterministic)
+    
+    # Convert back to numpy and remove batch dimension
+    action = actions.cpu().numpy()
+    if action.ndim > 0:
+        action = action[0]
+    
+    return int(action)
 
 def plot_results(stats_dict):
     """
@@ -153,22 +241,49 @@ def main():
     parser.add_argument("--render", action="store_true", help="Render the environment")
     args = parser.parse_args()
     
-    # Evaluate against different opponents
-    stats_dict = {}
-    for opponent in EVALUATION_PARAMS["opponents"]:
-        stats = evaluate_policy(
-            args.model, 
-            n_episodes=args.episodes, 
-            render=args.render,
-            opponent=opponent
-        )
-        stats_dict[opponent] = stats
+    # Test with just one opponent first
+    print("Testing with random opponent first...")
+    stats = evaluate_policy(
+        args.model, 
+        n_episodes=min(10, args.episodes),  # Start with fewer episodes for testing
+        render=args.render,
+        opponent="random"
+    )
     
-    # Plot results
-    plot_results(stats_dict)
+    if stats is None:
+        print("Failed to load model or evaluate. Exiting.")
+        return
     
-    # Save results
-    np.save("evaluation_results.npy", stats_dict)
+    if stats["illegal_rate"] > 50:
+        print(f"WARNING: High illegal move rate ({stats['illegal_rate']:.1f}%). Check action masking.")
+    
+    if stats["avg_episode_length"] < 5:
+        print(f"WARNING: Very short episodes ({stats['avg_episode_length']:.1f} moves). Check policy prediction.")
+    
+    # If basic test passes, run full evaluation
+    if stats["illegal_rate"] < 50 and stats["avg_episode_length"] > 3:
+        print("Basic test passed. Running full evaluation...")
+        
+        # Evaluate against different opponents
+        stats_dict = {}
+        for opponent in EVALUATION_PARAMS["opponents"]:
+            stats = evaluate_policy(
+                args.model, 
+                n_episodes=args.episodes, 
+                render=args.render,
+                opponent=opponent
+            )
+            if stats is not None:
+                stats_dict[opponent] = stats
+        
+        if stats_dict:
+            # Plot results
+            plot_results(stats_dict)
+            
+            # Save results
+            np.save("evaluation_results.npy", stats_dict)
+    else:
+        print("Basic test failed. Please check your model and environment setup.")
 
 if __name__ == "__main__":
     main()
