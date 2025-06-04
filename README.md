@@ -266,7 +266,7 @@ python -m train.train_ppo --opponent self_play --self-play-prob 0.9
 - Train thoroughly to achieve expert-level play
 - Hyperparameter optimization with Optuna
 - Integration with chess GUIs for human vs. AI play
-- 🔲 MCTS integration for hybrid approach
+- MCTS integration for hybrid approach
 
 ## Contributing
 
