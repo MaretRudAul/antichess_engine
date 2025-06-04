@@ -19,6 +19,7 @@ class AntichessEnv(gym.Env):
     Reward:
         +1 for winning the game
         -1 for losing the game
+        [intermediate rewards for losing pieces]
         0 for all other transitions
         
     Episode Termination:
@@ -32,7 +33,8 @@ class AntichessEnv(gym.Env):
         Initialize the Antichess environment.
         
         Args:
-            opponent: Strategy for opponent moves. Options: "random", "heuristic"
+            opponent: Strategy for opponent moves. Options: 
+                     "random", "heuristic", "self_play"
         """
         super().__init__()
         
@@ -54,6 +56,28 @@ class AntichessEnv(gym.Env):
         self.done = False
         self.opponent = opponent
         self.player_color = Player.WHITE  # The agent always plays as WHITE
+        
+        # Self-play specific attributes
+        self.opponent_model = None
+        self.self_play_probability = 0.8  # Probability of using model vs random
+
+    def set_opponent_model(self, model):
+        """
+        Set the model to use for self-play opponent.
+        
+        Args:
+            model: The trained model to use as opponent
+        """
+        self.opponent_model = model
+
+    def set_self_play_probability(self, probability: float):
+        """
+        Set the probability of using the model vs random play in self-play mode.
+        
+        Args:
+            probability: Float between 0 and 1
+        """
+        self.self_play_probability = probability
 
     def seed(self, seed=None):
         """
@@ -88,9 +112,7 @@ class AntichessEnv(gym.Env):
             self._make_opponent_move()
         
         observation = self._get_observation()
-        # print(f"Reset observation shape: {observation['observation'].shape}")
-        # print(f"Non-zero elements: {np.count_nonzero(observation['observation'])}/{observation['observation'].size}")
-        return observation, {}  # Return observation and empty info dict
+        return observation, {}
 
     def calculate_reward(self, winner):
         if self.done:
@@ -99,12 +121,7 @@ class AntichessEnv(gym.Env):
             else:
                 return -1.0  # Loss
         
-        # Smaller rewards during gameplay
-        pieces_captured = self.previous_piece_count - len(self.board.piece_map())
-        if pieces_captured > 0:
-            return 0.01 * pieces_captured  # Small reward for forcing captures
-        
-        return 0  # No special event
+        return 0  # No reward during gameplay
     
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
@@ -128,12 +145,6 @@ class AntichessEnv(gym.Env):
         
         # Convert action index to chess move
         move = action_to_move(self.board, action)
-        
-        # Debug information using the action mask
-        is_legal = action_mask[action] == 1.0
-        # print(f"Agent action: {action}, Move: {move}, Legal: {is_legal}")
-        legal_moves_count = int(np.sum(action_mask))
-        # print(f"Available legal moves: {legal_moves_count}")
         
         # Check if move is legal using the mask
         if action_mask[action] == 1.0:
@@ -203,10 +214,15 @@ class AntichessEnv(gym.Env):
             self._make_random_opponent_move()
         elif self.opponent == "heuristic":
             self._make_heuristic_opponent_move()
+        elif self.opponent == "self_play":
+            self._make_self_play_opponent_move()
+        else:
+            # Default to random if unknown opponent type
+            self._make_random_opponent_move()
     
     def _make_random_opponent_move(self) -> None:
         """Make a random legal move for the opponent."""
-        legal_moves = self.board.get_legal_moves()
+        legal_moves = list(self.board.get_legal_moves())
         if legal_moves:
             move = np.random.choice(legal_moves)
             self.board.make_move(move)
@@ -214,32 +230,97 @@ class AntichessEnv(gym.Env):
     def _make_heuristic_opponent_move(self) -> None:
         """
         Make a heuristic-based move for the opponent.
-        Prefers captures and moves that minimize material.
+        Simple strategy for Antichess.
         """
-        legal_moves = self.board.get_legal_moves()
+        legal_moves = list(self.board.get_legal_moves())
         if not legal_moves:
             return
-            
-        # Simple heuristic: prefer capture moves
-        capturing_moves = [move for move in legal_moves if 
-                          self.board.board[move.to_square].player != Player.NONE]
         
-        if capturing_moves:
-            # Among capturing moves, prioritize capturing the highest value piece
-            piece_values = {
-                PieceType.PAWN: 1,
-                PieceType.KNIGHT: 3,
-                PieceType.BISHOP: 3,
-                PieceType.ROOK: 5,
-                PieceType.QUEEN: 9,
-                PieceType.KING: 0
-            }
+        # In Antichess, captures are already mandatory, so legal_moves already
+        # contains only captures if any exist, otherwise all legal moves
+        
+        # Simple heuristic: if multiple moves available, prefer moves that
+        # capture higher-value pieces or moves to central squares
+        if len(legal_moves) == 1:
+            self.board.make_move(legal_moves[0])
+            return
+        
+        # Score moves based on simple criteria
+        move_scores = []
+        for move in legal_moves:
+            score = 0
+            target_piece = self.board.board[move.to_square]
             
-            best_move = max(capturing_moves, key=lambda move: 
-                        piece_values.get(self.board.board[move.to_square].piece_type, 0))
-            self.board.make_move(best_move)
+            # Prefer capturing higher-value pieces
+            if target_piece.player != Player.NONE:
+                piece_values = {
+                    PieceType.PAWN: 1,
+                    PieceType.KNIGHT: 3,
+                    PieceType.BISHOP: 3,
+                    PieceType.ROOK: 5,
+                    PieceType.QUEEN: 9,
+                    PieceType.KING: 10
+                }
+                score += piece_values.get(target_piece.piece_type, 0)
+            
+            # Slightly prefer central squares
+            to_row, to_col = move.to_square
+            center_distance = abs(3.5 - to_row) + abs(3.5 - to_col)
+            score += (7 - center_distance) * 0.1
+            
+            move_scores.append(score)
+        
+        # Choose the move with highest score (with some randomness)
+        if max(move_scores) > min(move_scores):
+            # Weight moves by their scores
+            weights = np.array(move_scores)
+            weights = weights - min(weights) + 1  # Ensure all positive
+            probabilities = weights / sum(weights)
+            chosen_move = np.random.choice(legal_moves, p=probabilities)
         else:
-            # If no capturing moves, just pick randomly
+            # If all moves have equal score, choose randomly
+            chosen_move = np.random.choice(legal_moves)
+        
+        self.board.make_move(chosen_move)
+    
+    def _make_self_play_opponent_move(self) -> None:
+        """
+        Make a move using the self-play model or fall back to random.
+        """
+        # Use model with specified probability
+        use_model = (self.opponent_model is not None and 
+                    np.random.random() < self.self_play_probability)
+        
+        if use_model:
+            try:
+                self._make_model_opponent_move()
+            except Exception as e:
+                # If model fails, fall back to random
+                print(f"Self-play model failed: {e}. Falling back to random.")
+                self._make_random_opponent_move()
+        else:
+            self._make_random_opponent_move()
+    
+    def _make_model_opponent_move(self) -> None:
+        """Make a move using the opponent model."""
+        # Get current observation from opponent's perspective
+        obs = self._get_observation()
+        
+        # For simplicity, we'll use the same observation
+        # In a more sophisticated implementation, you might flip the board perspective
+        
+        # Predict action using the model
+        action, _ = self.opponent_model.predict(obs, deterministic=False)
+        
+        # Convert action to move
+        move = action_to_move(self.board, action)
+        
+        # Verify the move is legal (safety check)
+        legal_moves = list(self.board.get_legal_moves())
+        if move in legal_moves:
+            self.board.make_move(move)
+        else:
+            # If model suggests illegal move, fall back to random
             self._make_random_opponent_move()
 
     def get_action_mask(self) -> np.ndarray:

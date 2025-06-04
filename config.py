@@ -1,5 +1,3 @@
-# File: config.py
-
 from models.custom_policy import ChessCNN
 
 """
@@ -9,17 +7,17 @@ This file centralizes all hyperparameters and constants.
 
 # PPO Algorithm Hyperparameters
 PPO_PARAMS = {
-    "learning_rate": 3e-4,  # Learning rate
-    "n_steps": 2048,  # Number of steps to collect before updating
-    "batch_size": 64,  # Minibatch size for updates
-    "n_epochs": 10,  # Number of policy update epochs per update
-    "gamma": 0.99,  # Discount factor
-    "gae_lambda": 0.95,  # GAE lambda parameter
-    "clip_range": 0.2,  # PPO clipping parameter
-    "clip_range_vf": 0.2,  # Value function clipping parameter
-    "ent_coef": 0.1,  # Entropy coefficient (higher = more exploration)
-    "vf_coef": 0.5,  # Value function coefficient
-    "max_grad_norm": 0.5,  # Gradient clipping for numerical stability
+    "learning_rate": 3e-4,
+    "n_steps": 2048,
+    "batch_size": 64,
+    "n_epochs": 10,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "clip_range_vf": 0.2,
+    "ent_coef": 0.1,  # Increased for more exploration during self-play
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
     "policy_kwargs": {
         "features_extractor_class": ChessCNN,
         "features_extractor_kwargs": {"features_dim": 256},
@@ -29,29 +27,32 @@ PPO_PARAMS = {
 
 # Training Configuration
 TRAINING_PARAMS = {
-    "total_timesteps": 1_000_000,  # Total timesteps to train for
-    "num_envs": 8,  # Number of parallel environments
-    "opponent": "random",  # Opponent strategy during training
-    "eval_freq": 10000,  # How often to evaluate the agent
-    "n_eval_episodes": 50,  # Number of episodes for evaluation
-    "checkpoint_freq": 10000,  # How often to save model checkpoints
+    "total_timesteps": 1_000_000,
+    "num_envs": 8,
+    "opponent": "random",  # Starting opponent (will switch to self_play)
+    "eval_freq": 10000,
+    "n_eval_episodes": 50,
+    "checkpoint_freq": 10000,
+    # Self-play specific parameters
+    "self_play_start_step": 200_000,  # When to start self-play
+    "self_play_probability": 0.8,     # Probability of using model vs random
 }
 
 # Evaluation Configuration
 EVALUATION_PARAMS = {
-    "n_episodes": 100,  # Number of episodes for evaluation
-    "opponents": ["random", "heuristic"],  # List of opponents to evaluate against
-    "render": False,  # Whether to render the evaluation games
+    "n_episodes": 100,
+    "opponents": ["random", "heuristic", "self_play"],  # Added self_play
+    "render": False,
 }
 
 # Environment Parameters
 ENV_PARAMS = {
-    "board_size": 8,  # Standard 8x8 chess board
-    "action_space_size": 4096,  # 64x64 possible from-to moves
+    "board_size": 8,
+    "action_space_size": 4096,
 }
 
 # Model Architecture Parameters
 MODEL_PARAMS = {
-    "cnn_filters": 64,  # Number of filters in CNN layers
-    "features_dim": 256,  # Dimension of extracted features
+    "cnn_filters": 64,
+    "features_dim": 256,
 }
