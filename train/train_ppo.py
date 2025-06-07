@@ -31,7 +31,7 @@ class SelfPlayCallback(BaseCallback):
         
     def _on_step(self) -> bool:
         if not self.switched and self.num_timesteps >= self.switch_timestep:
-            print(f"\n🔄 CURRICULUM TRANSITION at timestep {self.num_timesteps:,}")
+            print(f"\nCURRICULUM TRANSITION at timestep {self.num_timesteps:,}")
             print(f"   Switching from random opponents to self-play")
             
             try:
@@ -48,11 +48,11 @@ class SelfPlayCallback(BaseCallback):
                 self.training_env.env_method('set_self_play_probability', self.self_play_prob)
                 
                 print(f"   All environments now using self-play with {self.self_play_prob:.1%} model probability")
-                print(f"   🎯 Self-play phase activated!")
+                print(f"   Self-play phase activated!")
                 self.switched = True
                 
             except Exception as e:
-                print(f"   ❌ Failed to enable self-play: {e}")
+                print(f"   Failed to enable self-play: {e}")
                 print(f"   Continuing with random opponents...")
                     
         return True
@@ -70,7 +70,7 @@ class ImmediateSelfPlayCallback(BaseCallback):
     def _on_training_start(self) -> None:
         """Set up self-play environments when training starts."""
         if not self.setup_complete:
-            print("🤖 Setting up self-play environments...")
+            print("Setting up self-play environments...")
             try:
                 # Save the model to a temporary file
                 import os
@@ -84,7 +84,7 @@ class ImmediateSelfPlayCallback(BaseCallback):
                 print(f"   Self-play configured for all environments ({self.self_play_prob:.1%} model)")
                 self.setup_complete = True
             except Exception as e:
-                print(f"   ❌ Failed to setup self-play: {e}")
+                print(f"   Failed to setup self-play: {e}")
                 print(f"   Falling back to random opponents...")
         
     def _on_step(self) -> bool:
@@ -140,7 +140,7 @@ class EnhancedCurriculumCallback(BaseCallback):
             
             if self.verbose > 0:
                 next_phase_key = self.phase_keys[self.current_phase]
-                print(f"\n🎯 CURRICULUM PHASE TRANSITION at timestep {self.num_timesteps:,}")
+                print(f"\nCURRICULUM PHASE TRANSITION at timestep {self.num_timesteps:,}")
                 print(f"   Transitioning from {current_phase_key} to {next_phase_key}")
             
             self._apply_phase_configuration()
@@ -164,7 +164,7 @@ class EnhancedCurriculumCallback(BaseCallback):
             # Enable self-play
             if not self.model_set_for_self_play:
                 if self.verbose > 0:
-                    print(f"   🤖 Setting up self-play with model...")
+                    print(f"   Setting up self-play with model...")
                 
                 try:
                     self.training_env.env_method('set_opponent_model', self.model)
@@ -173,7 +173,7 @@ class EnhancedCurriculumCallback(BaseCallback):
                     self.model_set_for_self_play = True
                 except Exception as e:
                     if self.verbose > 0:
-                        print(f"   ❌ Failed to enable self-play: {e}")
+                        print(f"   Failed to enable self-play: {e}")
                         print(f"   Continuing with previous opponent type...")
             else:
                 # Update self-play probability
@@ -181,10 +181,10 @@ class EnhancedCurriculumCallback(BaseCallback):
                     self.training_env.env_method('set_self_play_probability', opponent_mix["self_play"])
                 except Exception as e:
                     if self.verbose > 0:
-                        print(f"   ❌ Failed to update self-play probability: {e}")
+                        print(f"   Failed to update self-play probability: {e}")
         
         if self.verbose > 0:
-            print(f"   ✅ Phase {phase_key} activated")
+            print(f"   Phase {phase_key} activated")
     
     def _print_curriculum_schedule(self):
         """Print the full curriculum schedule."""
@@ -233,7 +233,7 @@ class MaskedEvalCallback(BaseCallback):
         illegal_actions = 0
         
         print(f"\n{'='*50}")
-        print(f"🎯 EVALUATION AT TIMESTEP {self.num_timesteps:,}")
+        print(f"EVALUATION AT TIMESTEP {self.num_timesteps:,}")
         print(f"{'='*50}")
         
         for episode in range(self.n_eval_episodes):
@@ -324,7 +324,7 @@ class MaskedEvalCallback(BaseCallback):
             if self.best_model_save_path is not None:
                 best_path = os.path.join(self.best_model_save_path, "best_model")
                 self.model.save(best_path)
-                print(f"  🎉 NEW BEST MODEL! Saved to {best_path}")
+                print(f"  NEW BEST MODEL! Saved to {best_path}")
         
         print(f"{'='*50}\n")
     
