@@ -1,10 +1,10 @@
+import argparse
 import os
+import sys
 import zipfile
 import numpy as np
-import gymnasium as gym
-from datetime import datetime
 import torch
-import argparse
+from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
@@ -12,20 +12,18 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.logger import configure
 
-import sys
-import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
-from config import PPO_PARAMS, TRAINING_PARAMS
+from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG
 
 class SelfPlayCallback(BaseCallback):
     """
     Callback to introduce self-play during training.
     """
     
-    def __init__(self, switch_timestep=200_000, self_play_prob=0.8, verbose=0):
+    def __init__(self, switch_timestep=100_000, self_play_prob=0.8, verbose=0):
         super(SelfPlayCallback, self).__init__(verbose)
         self.switch_timestep = switch_timestep
         self.self_play_prob = self_play_prob
@@ -33,16 +31,30 @@ class SelfPlayCallback(BaseCallback):
         
     def _on_step(self) -> bool:
         if not self.switched and self.num_timesteps >= self.switch_timestep:
-            print(f"\nSwitching to self-play at timestep {self.num_timesteps}")
+            print(f"\n🔄 CURRICULUM TRANSITION at timestep {self.num_timesteps:,}")
+            print(f"   Switching from random opponents to self-play")
             
-            # Use env_method to update all environments in SubprocVecEnv
-            self.training_env.env_method('__setattr__', 'opponent', 'self_play')
-            self.training_env.env_method('set_opponent_model', self.model)
-            self.training_env.env_method('set_self_play_probability', self.self_play_prob)
+            try:
+                # First set the opponent type to self_play
+                self.training_env.env_method('__setattr__', 'opponent', 'self_play')
                 
-            print(f"All environments now using self-play with {self.self_play_prob:.1%} model probability")
-            self.switched = True
-            
+                # Save the model to a temporary file
+                import os
+                temp_model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp_self_play_model.zip")
+                self.model.save(temp_model_path)
+                
+                # Share the model path instead of the model object
+                self.training_env.env_method('set_opponent_model_path', temp_model_path)
+                self.training_env.env_method('set_self_play_probability', self.self_play_prob)
+                
+                print(f"   All environments now using self-play with {self.self_play_prob:.1%} model probability")
+                print(f"   🎯 Self-play phase activated!")
+                self.switched = True
+                
+            except Exception as e:
+                print(f"   ❌ Failed to enable self-play: {e}")
+                print(f"   Continuing with random opponents...")
+                    
         return True
 
 class ImmediateSelfPlayCallback(BaseCallback):
@@ -58,14 +70,141 @@ class ImmediateSelfPlayCallback(BaseCallback):
     def _on_training_start(self) -> None:
         """Set up self-play environments when training starts."""
         if not self.setup_complete:
-            print("Setting up self-play environments...")
-            self.training_env.env_method('set_opponent_model', self.model)
-            self.training_env.env_method('set_self_play_probability', self.self_play_prob)
-            print("Self-play configured for all environments")
-            self.setup_complete = True
+            print("🤖 Setting up self-play environments...")
+            try:
+                # Save the model to a temporary file
+                import os
+                temp_model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp_self_play_model.zip")
+                self.model.save(temp_model_path)
+                
+                # Share the model path instead of the model object
+                self.training_env.env_method('set_opponent_model_path', temp_model_path)
+                self.training_env.env_method('set_self_play_probability', self.self_play_prob)
+                
+                print(f"   Self-play configured for all environments ({self.self_play_prob:.1%} model)")
+                self.setup_complete = True
+            except Exception as e:
+                print(f"   ❌ Failed to setup self-play: {e}")
+                print(f"   Falling back to random opponents...")
         
     def _on_step(self) -> bool:
         return True
+
+class EnhancedCurriculumCallback(BaseCallback):
+    """
+    Enhanced curriculum learning callback with multiple phases.
+    Uses the config-defined curriculum schedule.
+    """
+    
+    def __init__(self, curriculum_config=None, verbose=0):
+        super(EnhancedCurriculumCallback, self).__init__(verbose)
+        self.curriculum_config = curriculum_config or CURRICULUM_CONFIG
+        self.current_phase = 0
+        self.phase_keys = list(self.curriculum_config.keys())
+        self.phase_start_timestep = 0
+        self.model_set_for_self_play = False
+        
+    def _on_training_start(self) -> None:
+        """Initialize curriculum at training start."""
+        if self.verbose > 0:
+            print("\n" + "="*50)
+            print("🎓 ENHANCED CURRICULUM LEARNING INITIALIZED")
+            print("="*50)
+            self._print_curriculum_schedule()
+            print("="*50)
+            
+        # Set initial phase
+        self._update_phase_if_needed()
+        
+    def _on_step(self) -> bool:
+        """Check if we need to advance to the next curriculum phase."""
+        self._update_phase_if_needed()
+        return True
+    
+    def _update_phase_if_needed(self):
+        """Update the training phase if we've reached the next milestone."""
+        if self.current_phase >= len(self.phase_keys):
+            return  # Already at final phase
+            
+        current_phase_key = self.phase_keys[self.current_phase]
+        current_phase_config = self.curriculum_config[current_phase_key]
+        
+        # Check if we should advance to next phase
+        timesteps_in_phase = self.num_timesteps - self.phase_start_timestep
+        phase_duration = current_phase_config["timesteps"]
+        
+        if timesteps_in_phase >= phase_duration and self.current_phase < len(self.phase_keys) - 1:
+            # Advance to next phase
+            self.current_phase += 1
+            self.phase_start_timestep = self.num_timesteps
+            
+            if self.verbose > 0:
+                next_phase_key = self.phase_keys[self.current_phase]
+                print(f"\n🎯 CURRICULUM PHASE TRANSITION at timestep {self.num_timesteps:,}")
+                print(f"   Transitioning from {current_phase_key} to {next_phase_key}")
+            
+            self._apply_phase_configuration()
+    
+    def _apply_phase_configuration(self):
+        """Apply the configuration for the current phase."""
+        if self.current_phase >= len(self.phase_keys):
+            return
+            
+        phase_key = self.phase_keys[self.current_phase]
+        phase_config = self.curriculum_config[phase_key]
+        opponent_mix = phase_config["opponent_mix"]
+        
+        if self.verbose > 0:
+            print(f"   Applying {phase_key} configuration:")
+            for opponent, prob in opponent_mix.items():
+                print(f"     {opponent}: {prob:.1%}")
+        
+        # Update environments based on opponent mix
+        if "self_play" in opponent_mix and opponent_mix["self_play"] > 0:
+            # Enable self-play
+            if not self.model_set_for_self_play:
+                if self.verbose > 0:
+                    print(f"   🤖 Setting up self-play with model...")
+                
+                try:
+                    self.training_env.env_method('set_opponent_model', self.model)
+                    self.training_env.env_method('__setattr__', 'opponent', 'self_play')
+                    self.training_env.env_method('set_self_play_probability', opponent_mix["self_play"])
+                    self.model_set_for_self_play = True
+                except Exception as e:
+                    if self.verbose > 0:
+                        print(f"   ❌ Failed to enable self-play: {e}")
+                        print(f"   Continuing with previous opponent type...")
+            else:
+                # Update self-play probability
+                try:
+                    self.training_env.env_method('set_self_play_probability', opponent_mix["self_play"])
+                except Exception as e:
+                    if self.verbose > 0:
+                        print(f"   ❌ Failed to update self-play probability: {e}")
+        
+        if self.verbose > 0:
+            print(f"   ✅ Phase {phase_key} activated")
+    
+    def _print_curriculum_schedule(self):
+        """Print the full curriculum schedule."""
+        print("Curriculum Schedule:")
+        cumulative_timesteps = 0
+        
+        for i, phase_key in enumerate(self.phase_keys):
+            phase_config = self.curriculum_config[phase_key]
+            duration = phase_config["timesteps"]
+            opponent_mix = phase_config["opponent_mix"]
+            
+            if duration == float('inf'):
+                print(f"  Phase {i+1} ({phase_key}): {cumulative_timesteps:,}+ timesteps")
+            else:
+                end_timesteps = cumulative_timesteps + duration
+                print(f"  Phase {i+1} ({phase_key}): {cumulative_timesteps:,} - {end_timesteps:,} timesteps")
+                cumulative_timesteps = end_timesteps
+            
+            for opponent, prob in opponent_mix.items():
+                print(f"    {opponent}: {prob:.1%}")
 
 class MaskedEvalCallback(BaseCallback):
     """
@@ -84,7 +223,6 @@ class MaskedEvalCallback(BaseCallback):
         
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            # Evaluate the policy
             self._evaluate_policy()
         return True
     
@@ -95,7 +233,7 @@ class MaskedEvalCallback(BaseCallback):
         illegal_actions = 0
         
         print(f"\n{'='*50}")
-        print(f"EVALUATION AT TIMESTEP {self.num_timesteps:,}")
+        print(f"🎯 EVALUATION AT TIMESTEP {self.num_timesteps:,}")
         print(f"{'='*50}")
         
         for episode in range(self.n_eval_episodes):
@@ -106,7 +244,6 @@ class MaskedEvalCallback(BaseCallback):
                 obs_vec = obs_vec[0]  # Get observation from (obs, info) tuple
             
             # For vectorized environments, obs_vec is a list/array of observations
-            # For Dict spaces, each element is a dictionary
             if isinstance(obs_vec, list):
                 obs = obs_vec[0]  # Get first environment's observation
             elif isinstance(obs_vec, dict):
@@ -224,17 +361,6 @@ class MaskedEvalCallback(BaseCallback):
         return int(action)
 
 def make_env(rank, opponent="random", seed=0):
-    """
-    Helper function to create and seed an Antichess environment.
-    
-    Args:
-        rank: Worker rank for running multiple environments
-        opponent: Strategy for the opponent
-        seed: Random seed
-        
-    Returns:
-        A function that creates and initializes an environment
-    """
     def _init():
         env = AntichessEnv(opponent=opponent)
         env.seed(seed + rank)
@@ -243,7 +369,6 @@ def make_env(rank, opponent="random", seed=0):
     return _init
 
 def parse_args():
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Train an Antichess agent using PPO")
     
     # Training configuration
@@ -258,10 +383,10 @@ def parse_args():
                        help="Number of parallel environments")
     
     # Self-play specific arguments
-    parser.add_argument("--self-play-start", type=int, default=200_000,
+    parser.add_argument("--self-play-start", type=int, default=TRAINING_PARAMS["self_play_start_step"],
                        help="Timestep to start self-play (only for curriculum mode)")
     
-    parser.add_argument("--self-play-prob", type=float, default=0.8,
+    parser.add_argument("--self-play-prob", type=float, default=TRAINING_PARAMS["self_play_probability"],
                        help="Probability of using model vs random in self-play mode (0.0-1.0)")
     
     # Mixed opponent arguments
@@ -280,6 +405,10 @@ def parse_args():
     
     parser.add_argument("--checkpoint-freq", type=int, default=TRAINING_PARAMS["checkpoint_freq"],
                        help="Save checkpoint every N timesteps")
+    
+    # Curriculum options
+    parser.add_argument("--use-enhanced-curriculum", action="store_true",
+                       help="Use the enhanced multi-phase curriculum from config.py")
     
     # Hardware options
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"],
@@ -361,23 +490,77 @@ def create_mixed_env(random_prob=0.5, heuristic_prob=0.3):
     
     return MixedOpponentEnv()
 
+def find_latest_checkpoint() -> str:
+    """Find the most recent valid checkpoint file."""
+    models_dir = "trained_models"
+    if not os.path.exists(models_dir):
+        return None
+    
+    checkpoint_paths = []
+    for root, dirs, files in os.walk(models_dir):
+        for file in files:
+            if file.endswith(".zip") and "antichess_model" in file:
+                checkpoint_paths.append(os.path.join(root, file))
+    
+    if not checkpoint_paths:
+        return None
+    
+    checkpoint_paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    return checkpoint_paths[0]
+
+def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
+    """Extract the number of timesteps from a checkpoint filename."""
+    try:
+        filename = os.path.basename(checkpoint_path)
+        parts = filename.split('_')
+        if len(parts) >= 3 and parts[-1].endswith('.zip'):
+            steps = int(parts[-1].replace('.zip', ''))
+            return steps
+    except:
+        pass
+    
+    return TRAINING_PARAMS["checkpoint_freq"]
+
+def create_new_model(env, log_dir, device="auto"):
+    """Create a new PPO model with the configured parameters"""
+    print("Creating PPO agent with learning rate scheduling...")
+    
+    model = PPO(
+        MaskedActorCriticPolicy,
+        env,
+        **PPO_PARAMS,
+        tensorboard_log=log_dir,
+        device=device,
+        verbose=1
+    )
+
+    new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
+    model.set_logger(new_logger)
+    
+    return model
+
 def main():
     """Train a PPO agent to play Antichess with configurable opponents."""
     args = parse_args()
     validate_args(args)
     
-    print("Starting Antichess PPO Training")
-    print("=" * 50)
+    print("Starting Antichess PPO Training with Learning Rate Scheduling")
+    print("=" * 60)
     
     # Print configuration
     print(f"Training Configuration:")
     print(f"   Opponent Strategy: {args.opponent}")
     print(f"   Total Timesteps: {args.total_timesteps:,}")
     print(f"   Parallel Environments: {args.num_envs}")
+    print(f"   Learning Rate: Scheduled (linear decay from 3e-4)")
     
     if args.opponent == "curriculum":
-        print(f"   Self-play starts at: {args.self_play_start:,} timesteps")
-        print(f"   Self-play probability: {args.self_play_prob:.1%}")
+        if args.use_enhanced_curriculum:
+            print(f"   Curriculum Type: Enhanced (multi-phase)")
+        else:
+            print(f"   Curriculum Type: Simple (random → self-play)")
+            print(f"   Self-play starts at: {args.self_play_start:,} timesteps")
+            print(f"   Self-play probability: {args.self_play_prob:.1%}")
     elif args.opponent == "self_play":
         print(f"   Self-play probability: {args.self_play_prob:.1%}")
     elif args.opponent == "mixed":
@@ -399,7 +582,7 @@ def main():
         np.random.seed(args.seed)
         print(f"   Random Seed: {args.seed}")
     
-    print("=" * 50)
+    print("=" * 60)
     
     # Create output directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -453,9 +636,14 @@ def main():
             monitor_dir=log_dir
         )
         
-        print(f"Training Schedule:")
-        print(f"   Phase 1 (0-{args.self_play_start:,}): Random opponents")
-        print(f"   Phase 2 ({args.self_play_start:,}+): Self-play ({args.self_play_prob:.1%} model, {1-args.self_play_prob:.1%} random)")
+        if args.use_enhanced_curriculum:
+            print(f"Enhanced Curriculum Schedule:")
+            for phase_name, phase_config in CURRICULUM_CONFIG.items():
+                print(f"   {phase_name}: {phase_config}")
+        else:
+            print(f"Simple Curriculum Schedule:")
+            print(f"   Phase 1 (0-{args.self_play_start:,}): Random opponents")
+            print(f"   Phase 2 ({args.self_play_start:,}+): Self-play ({args.self_play_prob:.1%} model, {1-args.self_play_prob:.1%} random)")
         
     elif args.opponent == "mixed":
         env = make_vec_env(
@@ -487,7 +675,6 @@ def main():
         n_eval_episodes=TRAINING_PARAMS["n_eval_episodes"],
         best_model_save_path=model_dir,
         log_path=log_dir,
-        # verbose=1 if args.verbose else 0
         verbose=1
     )
     callbacks.append(eval_callback)
@@ -503,13 +690,21 @@ def main():
     
     # Add opponent-specific callbacks
     if args.opponent == "curriculum":
-        # Add callback to switch from random to self-play
-        self_play_callback = SelfPlayCallback(
-            switch_timestep=args.self_play_start,
-            self_play_prob=args.self_play_prob,
-            verbose=1 if args.verbose else 0
-        )
-        callbacks.append(self_play_callback)
+        if args.use_enhanced_curriculum:
+            # Use the enhanced multi-phase curriculum
+            enhanced_curriculum_callback = EnhancedCurriculumCallback(
+                curriculum_config=CURRICULUM_CONFIG,
+                verbose=1 if args.verbose else 0
+            )
+            callbacks.append(enhanced_curriculum_callback)
+        else:
+            # Use the simple two-phase curriculum
+            self_play_callback = SelfPlayCallback(
+                switch_timestep=args.self_play_start,
+                self_play_prob=args.self_play_prob,
+                verbose=1 if args.verbose else 0
+            )
+            callbacks.append(self_play_callback)
         
     elif args.opponent == "self_play":
         # Add callback to set up self-play immediately when training starts
@@ -547,16 +742,24 @@ def main():
             # Handle resumed training for different opponent types
             if args.opponent == "curriculum" and trained_steps >= args.self_play_start:
                 print("Checkpoint already past self-play threshold. Enabling self-play...")
-                env.env_method('__setattr__', 'opponent', 'self_play')
-                env.env_method('set_opponent_model', model)
-                env.env_method('set_self_play_probability', args.self_play_prob)
-                print("Self-play enabled for all environments")
+                try:
+                    env.env_method('__setattr__', 'opponent', 'self_play')
+                    env.env_method('set_opponent_model', model)
+                    env.env_method('set_self_play_probability', args.self_play_prob)
+                    print("Self-play enabled for all environments")
+                except Exception as e:
+                    print(f"Failed to enable self-play on resume: {e}")
+                    print("Continuing with current opponent type...")
             
             elif args.opponent == "self_play":
                 print("Setting up self-play environments for resumed training...")
-                env.env_method('set_opponent_model', model)
-                env.env_method('set_self_play_probability', args.self_play_prob)
-                print("Self-play configured for all environments")
+                try:
+                    env.env_method('set_opponent_model', model)
+                    env.env_method('set_self_play_probability', args.self_play_prob)
+                    print("Self-play configured for all environments")
+                except Exception as e:
+                    print(f"Failed to setup self-play on resume: {e}")
+                    print("Continuing with random opponents...")
                 
         except (zipfile.BadZipFile, ValueError, EOFError) as e:
             print(f"Error loading checkpoint: {e}")
@@ -590,70 +793,15 @@ def main():
     print(f"Training complete! Final model saved to {final_model_path}")
     
     # Print summary
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("Training Summary:")
     print(f"   Total Timesteps: {args.total_timesteps:,}")
     print(f"   Opponent Strategy: {args.opponent}")
+    print(f"   Learning Rate: Scheduled (linear decay)")
     print(f"   Final Model: {final_model_path}")
     print(f"   Training Logs: {log_dir}")
     print(f"   TensorBoard: tensorboard --logdir {log_dir}")
-    print("=" * 50)
-
-def find_latest_checkpoint() -> str:
-    """Find the most recent valid checkpoint file."""
-    models_dir = "trained_models"
-    if not os.path.exists(models_dir):
-        return None
-    
-    checkpoint_paths = []
-    for root, dirs, files in os.walk(models_dir):
-        for file in files:
-            if file.endswith(".zip") and "antichess_model" in file:
-                full_path = os.path.join(root, file)
-                try:
-                    with zipfile.ZipFile(full_path, 'r') as zip_ref:
-                        pass
-                    checkpoint_paths.append(full_path)
-                except zipfile.BadZipFile:
-                    print(f"Warning: Found corrupted checkpoint file {full_path}, skipping")
-                    continue
-    
-    if not checkpoint_paths:
-        return None
-    
-    checkpoint_paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-    return checkpoint_paths[0]
-
-def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
-    """Extract the number of timesteps from a checkpoint filename."""
-    try:
-        filename = os.path.basename(checkpoint_path)
-        parts = filename.split('_')
-        if len(parts) >= 3 and parts[-1].endswith('.zip'):
-            steps = int(parts[-1].replace('.zip', ''))
-            return steps
-    except:
-        pass
-    
-    return TRAINING_PARAMS["checkpoint_freq"]
-
-def create_new_model(env, log_dir, device="auto"):
-    """Create a new PPO model with the configured parameters"""
-    print("Creating PPO agent...")
-    
-    model = PPO(
-        MaskedActorCriticPolicy,
-        env,
-        **PPO_PARAMS,
-        tensorboard_log=log_dir,
-        device=device,
-        verbose=1
-    )
-
-    new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
-    model.set_logger(new_logger)
-    
-    return model
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()

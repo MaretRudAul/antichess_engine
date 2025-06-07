@@ -69,6 +69,25 @@ class AntichessEnv(gym.Env):
             model: The trained model to use as opponent
         """
         self.opponent_model = model
+    
+    def set_opponent_model_path(self, model_path):
+        """
+        Load the model from a path instead of receiving the model object directly.
+        
+        Args:
+            model_path: Path to the saved model file
+        """
+        try:
+            from stable_baselines3 import PPO
+            from models.custom_policy import MaskedActorCriticPolicy
+            
+            self.opponent_model = PPO.load(
+                model_path,
+                custom_objects={"policy_class": MaskedActorCriticPolicy}
+            )
+            print(f"   ✅ Environment loaded self-play model from {model_path}")
+        except Exception as e:
+            print(f"   ⚠️ Environment failed to load model: {e}")
 
     def set_self_play_probability(self, probability: float):
         """
