@@ -67,6 +67,162 @@ class ImmediateSelfPlayCallback(BaseCallback):
     def _on_step(self) -> bool:
         return True
 
+class MaskedEvalCallback(BaseCallback):
+    """
+    Custom evaluation callback that properly handles action masking.
+    """
+    
+    def __init__(self, eval_env, eval_freq=10000, n_eval_episodes=50, 
+                 best_model_save_path=None, log_path=None, verbose=0):
+        super(MaskedEvalCallback, self).__init__(verbose)
+        self.eval_env = eval_env
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = n_eval_episodes
+        self.best_model_save_path = best_model_save_path
+        self.log_path = log_path
+        self.best_mean_reward = -np.inf
+        
+    def _on_step(self) -> bool:
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            # Evaluate the policy
+            self._evaluate_policy()
+        return True
+    
+    def _evaluate_policy(self):
+        """Evaluate the current policy."""
+        episode_rewards = []
+        episode_lengths = []
+        illegal_actions = 0
+        
+        print(f"\n{'='*50}")
+        print(f"EVALUATION AT TIMESTEP {self.num_timesteps:,}")
+        print(f"{'='*50}")
+        
+        for episode in range(self.n_eval_episodes):
+            obs_vec = self.eval_env.reset()
+            
+            # Handle Dict observation space properly
+            if isinstance(obs_vec, tuple):
+                obs_vec = obs_vec[0]  # Get observation from (obs, info) tuple
+            
+            # For vectorized environments, obs_vec is a list/array of observations
+            # For Dict spaces, each element is a dictionary
+            if isinstance(obs_vec, list):
+                obs = obs_vec[0]  # Get first environment's observation
+            elif isinstance(obs_vec, dict):
+                obs = obs_vec  # Single environment case
+            else:
+                # Handle numpy array case for vectorized environments
+                obs = {key: obs_vec[key][0] for key in obs_vec.keys()} if hasattr(obs_vec, 'keys') else obs_vec[0]
+            
+            done = False
+            episode_reward = 0
+            episode_length = 0
+            
+            while not done:
+                # Use the model to predict action with proper masking
+                action = self._predict_with_mask(obs)
+                
+                # Take step in environment
+                step_result = self.eval_env.step([action])
+                
+                # Handle both old and new gym API
+                if len(step_result) == 4:
+                    obs_vec, reward, done_vec, info = step_result
+                elif len(step_result) == 5:
+                    obs_vec, reward, terminated_vec, truncated_vec, info = step_result
+                    done_vec = [t or tr for t, tr in zip(terminated_vec, truncated_vec)]
+                else:
+                    raise ValueError(f"Unexpected step result length: {len(step_result)}")
+                
+                # Extract values for single environment
+                if isinstance(obs_vec, list):
+                    obs = obs_vec[0]
+                elif isinstance(obs_vec, dict):
+                    obs = obs_vec
+                else:
+                    obs = {key: obs_vec[key][0] for key in obs_vec.keys()} if hasattr(obs_vec, 'keys') else obs_vec[0]
+                
+                episode_reward += reward[0] if isinstance(reward, (list, np.ndarray)) else reward
+                episode_length += 1
+                done = done_vec[0] if isinstance(done_vec, (list, np.ndarray)) else done_vec
+                
+                # Check for illegal actions
+                info_single = info[0] if isinstance(info, list) else info
+                if isinstance(info_single, dict) and info_single.get("illegal_move", False):
+                    illegal_actions += 1
+                
+                # Safety check to prevent infinite episodes
+                if episode_length > 300:
+                    done = True
+            
+            episode_rewards.append(episode_reward)
+            episode_lengths.append(episode_length)
+        
+        # Calculate statistics
+        mean_reward = np.mean(episode_rewards)
+        std_reward = np.std(episode_rewards)
+        mean_length = np.mean(episode_lengths)
+        std_length = np.std(episode_lengths)
+        illegal_rate = illegal_actions / self.n_eval_episodes
+        
+        # Always print results (regardless of verbose setting)
+        print(f"Evaluation Results ({self.n_eval_episodes} episodes):")
+        print(f"  Mean Reward: {mean_reward:.3f} ± {std_reward:.3f}")
+        print(f"  Mean Episode Length: {mean_length:.1f} ± {std_length:.1f}")
+        print(f"  Illegal Action Rate: {illegal_rate:.1%}")
+        print(f"  Best Reward So Far: {self.best_mean_reward:.3f}")
+        
+        # Log to tensorboard/csv (shows up in training output)
+        self.logger.record("eval/mean_reward", mean_reward)
+        self.logger.record("eval/std_reward", std_reward)
+        self.logger.record("eval/mean_ep_length", mean_length)
+        self.logger.record("eval/std_ep_length", std_length)
+        self.logger.record("eval/illegal_rate", illegal_rate)
+        self.logger.record("eval/n_episodes", self.n_eval_episodes)
+        
+        # Save best model
+        if mean_reward > self.best_mean_reward:
+            self.best_mean_reward = mean_reward
+            if self.best_model_save_path is not None:
+                best_path = os.path.join(self.best_model_save_path, "best_model")
+                self.model.save(best_path)
+                print(f"  🎉 NEW BEST MODEL! Saved to {best_path}")
+        
+        print(f"{'='*50}\n")
+    
+    def _predict_with_mask(self, obs):
+        """Make a prediction using the model while respecting action masks."""
+        if not isinstance(obs, dict) or 'action_mask' not in obs:
+            # Fallback to standard prediction if no mask available
+            action, _ = self.model.predict(obs, deterministic=True)
+            return action
+        
+        # Convert observations to tensors
+        device = next(self.model.policy.parameters()).device
+        
+        # Handle single observation (not batched)
+        obs_tensor = {}
+        for key, value in obs.items():
+            if isinstance(value, np.ndarray):
+                # Add batch dimension if needed
+                if value.ndim == len(self.model.observation_space[key].shape):
+                    value = np.expand_dims(value, axis=0)
+                obs_tensor[key] = torch.from_numpy(value).float().to(device)
+            else:
+                obs_tensor[key] = value
+        
+        # Use the policy's forward method directly
+        with torch.no_grad():
+            actions, values, log_probs = self.model.policy.forward(obs_tensor, deterministic=True)
+        
+        # Convert back to numpy and remove batch dimension
+        action = actions.cpu().numpy()
+        if action.ndim > 0:
+            action = action[0]
+        
+        return int(action)
+
 def make_env(rank, opponent="random", seed=0):
     """
     Helper function to create and seed an Antichess environment.
@@ -289,24 +445,17 @@ def main():
         )
         
     elif args.opponent == "curriculum":
-        self_play_callback = SelfPlayCallback(
-            switch_timestep=args.self_play_start,
-            self_play_prob=args.self_play_prob,
-            verbose=1 if args.verbose else 0
+        # Start with random opponents, will switch to self-play later via callback
+        env = make_vec_env(
+            lambda: AntichessEnv(opponent="random"),
+            n_envs=args.num_envs,
+            vec_env_cls=SubprocVecEnv,
+            monitor_dir=log_dir
         )
-        callbacks.append(self_play_callback)
         
         print(f"Training Schedule:")
         print(f"   Phase 1 (0-{args.self_play_start:,}): Random opponents")
         print(f"   Phase 2 ({args.self_play_start:,}+): Self-play ({args.self_play_prob:.1%} model, {1-args.self_play_prob:.1%} random)")
-
-    elif args.opponent == "self_play":
-        # Add immediate self-play callback for pure self-play mode
-        immediate_self_play_callback = ImmediateSelfPlayCallback(
-            self_play_prob=args.self_play_prob,
-            verbose=1 if args.verbose else 0
-        )
-        callbacks.append(immediate_self_play_callback)
         
     elif args.opponent == "mixed":
         env = make_vec_env(
@@ -315,6 +464,9 @@ def main():
             vec_env_cls=SubprocVecEnv,
             monitor_dir=log_dir
         )
+    
+    else:
+        raise ValueError(f"Unknown opponent strategy: {args.opponent}")
     
     # Create evaluation environment
     print("Creating evaluation environment...")
@@ -325,23 +477,22 @@ def main():
         monitor_dir=os.path.join(log_dir, "eval")
     )
     
-    # Set up callbacks
+    # Initialize callbacks list AFTER environment creation
     callbacks = []
     
-    # Evaluation callback
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=model_dir,
-        log_path=log_dir,
+    # Add evaluation callback
+    eval_callback = MaskedEvalCallback(
+        eval_env=eval_env,
         eval_freq=args.eval_freq,
         n_eval_episodes=TRAINING_PARAMS["n_eval_episodes"],
-        deterministic=True,
-        render=False,
-        verbose=1 if args.verbose else 0
+        best_model_save_path=model_dir,
+        log_path=log_dir,
+        # verbose=1 if args.verbose else 0
+        verbose=1
     )
     callbacks.append(eval_callback)
     
-    # Checkpoint callback
+    # Add checkpoint callback
     checkpoint_callback = CheckpointCallback(
         save_freq=args.checkpoint_freq,
         save_path=model_dir,
@@ -350,8 +501,9 @@ def main():
     )
     callbacks.append(checkpoint_callback)
     
-    # Self-play callback (only for curriculum and self_play modes)
+    # Add opponent-specific callbacks
     if args.opponent == "curriculum":
+        # Add callback to switch from random to self-play
         self_play_callback = SelfPlayCallback(
             switch_timestep=args.self_play_start,
             self_play_prob=args.self_play_prob,
@@ -359,9 +511,13 @@ def main():
         )
         callbacks.append(self_play_callback)
         
-        print(f"Training Schedule:")
-        print(f"   Phase 1 (0-{args.self_play_start:,}): Random opponents")
-        print(f"   Phase 2 ({args.self_play_start:,}+): Self-play ({args.self_play_prob:.1%} model, {1-args.self_play_prob:.1%} random)")
+    elif args.opponent == "self_play":
+        # Add callback to set up self-play immediately when training starts
+        immediate_self_play_callback = ImmediateSelfPlayCallback(
+            self_play_prob=args.self_play_prob,
+            verbose=1 if args.verbose else 0
+        )
+        callbacks.append(immediate_self_play_callback)
     
     # Check for existing checkpoints (unless --no-resume is specified)
     if not args.no_resume:
@@ -388,7 +544,7 @@ def main():
             remaining_steps = max(0, args.total_timesteps - trained_steps)
             print(f"Already trained for {trained_steps:,} steps. Continuing for {remaining_steps:,} more steps.")
             
-            # If using curriculum and already past threshold, enable self-play immediately
+            # Handle resumed training for different opponent types
             if args.opponent == "curriculum" and trained_steps >= args.self_play_start:
                 print("Checkpoint already past self-play threshold. Enabling self-play...")
                 env.env_method('__setattr__', 'opponent', 'self_play')
@@ -396,7 +552,6 @@ def main():
                 env.env_method('set_self_play_probability', args.self_play_prob)
                 print("Self-play enabled for all environments")
             
-            # If using pure self-play, set up the model immediately
             elif args.opponent == "self_play":
                 print("Setting up self-play environments for resumed training...")
                 env.env_method('set_opponent_model', model)
@@ -423,7 +578,7 @@ def main():
             reset_num_timesteps=False
         )
     except KeyboardInterrupt:
-        print("\nbTraining interrupted! Saving current model state...")
+        print("\nTraining interrupted! Saving current model state...")
         interrupted_model_path = os.path.join(model_dir, f"antichess_{args.opponent}_{timestamp}_interrupted")
         model.save(interrupted_model_path)
         print(f"Model saved to {interrupted_model_path}")

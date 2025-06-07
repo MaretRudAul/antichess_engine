@@ -3,7 +3,7 @@ import numpy as np
 from gymnasium import spaces
 from typing import Dict, Any, Tuple, Optional
 
-from antichess.board import AntichessBoard, Move, Player
+from antichess.board import AntichessBoard, Move, Player, PieceType
 from antichess.utils import encode_board, action_to_move, legal_moves_mask
 
 class AntichessEnv(gym.Env):
