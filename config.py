@@ -66,18 +66,18 @@ TRAINING_PARAMS = {
     "eval_freq": 25000,
     "n_eval_episodes": 20,
     "checkpoint_freq": 50000,
-    "self_play_start_step": 100_000,  # Test early to catch errors
+    "self_play_start_step": 400_000,
     "self_play_probability": 0.8,
 }
 
 # Curriculum stages for mixed training
 CURRICULUM_CONFIG = {
     "phase_1": {
-        "timesteps": 100_000,
+        "timesteps": 200_000,
         "opponent_mix": {"random": 1.0}
     },
     "phase_2": {
-        "timesteps": 100_000,
+        "timesteps": 400_000,
         "opponent_mix": {"random": 0.7, "heuristic": 0.3}
     },
     "phase_3": {
