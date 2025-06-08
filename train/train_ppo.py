@@ -91,6 +91,9 @@ def parse_args():
     
     parser.add_argument("--model-dir", type=str, default=None,
                        help="Custom model directory (default: auto-generated)")
+
+    parser.add_argument("--resume-from", type=str, default=None,
+                   help="Path to a specific checkpoint to resume training from")
     
     parser.add_argument("--verbose", action="store_true",
                        help="Enable verbose output")
@@ -157,24 +160,6 @@ def create_mixed_env(random_prob=0.5, heuristic_prob=0.3):
             return super().reset(**kwargs)
     
     return MixedOpponentEnv()
-
-def find_latest_checkpoint() -> str:
-    """Find the most recent valid checkpoint file."""
-    models_dir = "trained_models"
-    if not os.path.exists(models_dir):
-        return None
-    
-    checkpoint_paths = []
-    for root, dirs, files in os.walk(models_dir):
-        for file in files:
-            if file.endswith(".zip") and "antichess_model" in file:
-                checkpoint_paths.append(os.path.join(root, file))
-    
-    if not checkpoint_paths:
-        return None
-    
-    checkpoint_paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-    return checkpoint_paths[0]
 
 def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
     """Extract the number of timesteps from a checkpoint filename."""
@@ -410,64 +395,63 @@ def main():
         )
         callbacks.append(immediate_self_play_callback)
     
-    # Check for existing checkpoints (unless --no-resume is specified)
-    if not args.no_resume:
-        latest_checkpoint = find_latest_checkpoint()
-    else:
-        latest_checkpoint = None
-        print("Checkpoint resume disabled, starting fresh training")
-    
-    if latest_checkpoint:
-        print(f"Found existing checkpoint: {latest_checkpoint}")
-        print("Resuming training from checkpoint...")
-        try:
-            model = PPO.load(
-                latest_checkpoint,
-                env=env,
-                custom_objects={"policy_class": MaskedActorCriticPolicy},
-                tensorboard_log=log_dir
-            )
-            # Configure logging for resumed model
-            new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
-            model.set_logger(new_logger)
-            
-            trained_steps = extract_steps_from_checkpoint(latest_checkpoint)
-            remaining_steps = max(0, args.total_timesteps - trained_steps)
-            print(f"Already trained for {trained_steps:,} steps. Continuing for {remaining_steps:,} more steps.")
-            
-            # Handle resumed training for different opponent types
-            if args.opponent == "curriculum" and trained_steps >= args.self_play_start:
-                print("Checkpoint already past self-play threshold. Enabling self-play...")
-                try:
-                    env.env_method('__setattr__', 'opponent', 'self_play')
-                    env.env_method('set_opponent_model', model)
-                    env.env_method('set_self_play_probability', args.self_play_prob)
-                    print("Self-play enabled for all environments")
-                except Exception as e:
-                    print(f"Failed to enable self-play on resume: {e}")
-                    print("Continuing with current opponent type...")
-            
-            elif args.opponent == "self_play":
-                print("Setting up self-play environments for resumed training...")
-                try:
-                    env.env_method('set_opponent_model', model)
-                    env.env_method('set_self_play_probability', args.self_play_prob)
-                    print("Self-play configured for all environments")
-                except Exception as e:
-                    print(f"Failed to setup self-play on resume: {e}")
-                    print("Continuing with random opponents...")
+    if args.resume_from is not None:
+        checkpoint_path = args.resume_from
+        if os.path.exists(checkpoint_path) and checkpoint_path.endswith(".zip"):
+            print(f"Resuming training from specified checkpoint: {checkpoint_path}")
+            try:
+                model = PPO.load(
+                    checkpoint_path,
+                    env=env,
+                    custom_objects={"policy_class": MaskedActorCriticPolicy},
+                    tensorboard_log=log_dir
+                )
+                # Configure logging for resumed model
+                new_logger = configure(log_dir, ["stdout", "csv", "tensorboard"])
+                model.set_logger(new_logger)
                 
-        except (zipfile.BadZipFile, ValueError, EOFError) as e:
-            print(f"Error loading checkpoint: {e}")
-            print("Starting fresh training instead.")
-            model = create_new_model(env, log_dir, device=device)
-            remaining_steps = args.total_timesteps
+                # For manual resume, assume we want to continue training
+                print(f"Resuming training for {args.total_timesteps:,} more steps.")
+                
+                # Handle resumed training for different opponent types
+                if args.opponent == "curriculum" and args.use_enhanced_curriculum:
+                    # Re-detect which curriculum phase we should be in
+                    print("Applying correct curriculum phase based on current timesteps...")
+                    # Let the curriculum callback handle this during on_training_start
+                
+                elif args.opponent == "self_play":
+                    print("Setting up self-play environments for resumed training...")
+                    try:
+                        env.env_method('set_opponent_model', model)
+                        env.env_method('set_self_play_probability', args.self_play_prob)
+                        print("Self-play configured for all environments")
+                    except Exception as e:
+                        print(f"Failed to setup self-play on resume: {e}")
+                        print("Continuing with random opponents...")
+                    
+            except (zipfile.BadZipFile, ValueError, EOFError) as e:
+                print(f"Error loading checkpoint: {e}")
+                print("Starting fresh training instead.")
+                model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule)
+        else:
+            print(f"Checkpoint not found: {checkpoint_path}")
+            print("Starting fresh training...")
+            model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule)
     else:
-        print("No checkpoint found. Starting new training...")
+        print("No checkpoint specified. Starting fresh training...")
         model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule)
+
+    # Set remaining_steps to full training duration (don't try to calculate remaining)
+    remaining_steps = args.total_timesteps
+
+    if hasattr(model, 'num_timesteps'):
+        completed_steps = model.num_timesteps
+        remaining_steps = max(0, args.total_timesteps - completed_steps)
+        print(f"Already trained for {completed_steps:,} steps. Continuing for {remaining_steps:,} more steps.")
+    else:
+        # If we can't determine steps, use the full amount
         remaining_steps = args.total_timesteps
-    
-    print(f"Starting training for {remaining_steps:,} timesteps...")
+        print(f"Could not determine completed steps. Training for full {remaining_steps:,} steps.")
     
     try:
         model.learn(

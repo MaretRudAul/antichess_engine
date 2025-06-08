@@ -35,7 +35,7 @@ TRAINING_PARAMS = {
     "opponent": "curriculum",
     "eval_freq": 25000,
     "n_eval_episodes": 20,
-    "checkpoint_freq": 50000,
+    "checkpoint_freq": 400000,
     "self_play_start_step": 400_000,
     "self_play_probability": 0.8,
 }
