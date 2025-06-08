@@ -147,30 +147,57 @@ class CurriculumAwareSchedule:
     
     def __call__(self, progress_remaining: float) -> float:
         """
-        Calculate learning rate based on training progress and curriculum phase.
-        
-        Args:
-            progress_remaining: Float from 1.0 (start) to 0.0 (end)
-            
-        Returns:
-            Current learning rate
+        Calculate learning rate based on training progress and curriculum phase,
+        with smooth transitions between phases.
         """
         # Convert to progress completed for easier phase comparison
         progress = 1.0 - progress_remaining
         
+        # Define transition window (5% of training)
+        transition_window = 0.05
+        
         # Phase 1: Initial linear schedule 
-        if progress < self.phase1_end_pct:
-            # Rescale progress for this phase
+        if progress < self.phase1_end_pct - transition_window:
+            # Fully in phase 1
             phase_progress = progress / self.phase1_end_pct
             phase_remaining = 1.0 - phase_progress
             return self.linear_schedule(phase_remaining)
         
+        # Transition from Phase 1 to Phase 2
+        elif progress < self.phase1_end_pct + transition_window:
+            # Blend phase 1 and 2 learning rates
+            blend_factor = (progress - (self.phase1_end_pct - transition_window)) / (2 * transition_window)
+            
+            # Calculate each phase's learning rate
+            phase1_lr = self.linear_schedule(1.0 - (progress / self.phase1_end_pct))
+            
+            phase2_progress = (progress - self.phase1_end_pct) / (self.phase2_end_pct - self.phase1_end_pct)
+            phase2_lr = self.linear_schedule(1.0 - phase2_progress)
+            
+            # Blend the two learning rates
+            return phase1_lr * (1 - blend_factor) + phase2_lr * blend_factor
+        
         # Phase 2: Continued linear schedule
-        elif progress < self.phase2_end_pct:
+        elif progress < self.phase2_end_pct - transition_window:
             # Rescale progress for this phase
             phase_progress = (progress - self.phase1_end_pct) / (self.phase2_end_pct - self.phase1_end_pct)
             phase_remaining = 1.0 - phase_progress
             return self.linear_schedule(phase_remaining)
+        
+        # Transition from Phase 2 to Phase 3
+        elif progress < self.phase2_end_pct + transition_window:
+            # Blend phase 2 and 3 learning rates
+            blend_factor = (progress - (self.phase2_end_pct - transition_window)) / (2 * transition_window)
+            
+            # Calculate each phase's learning rate
+            phase2_progress = (progress - self.phase1_end_pct) / (self.phase2_end_pct - self.phase1_end_pct)
+            phase2_lr = self.linear_schedule(1.0 - phase2_progress)
+            
+            phase3_progress = (progress - self.phase2_end_pct) / (1.0 - self.phase2_end_pct)
+            phase3_lr = self.cosine_schedule(1.0 - phase3_progress)
+            
+            # Blend the two learning rates
+            return phase2_lr * (1 - blend_factor) + phase3_lr * blend_factor
         
         # Phase 3: Cosine schedule for fine-tuning with self-play
         else:
