@@ -23,11 +23,12 @@ class SelfPlayCallback(BaseCallback):
     Callback to introduce self-play during training.
     """
     
-    def __init__(self, switch_timestep=100_000, self_play_prob=0.8, verbose=0):
+    def __init__(self, switch_timestep=100_000, self_play_prob=0.8, model_dir=None, verbose=0):
         super(SelfPlayCallback, self).__init__(verbose)
         self.switch_timestep = switch_timestep
         self.self_play_prob = self_play_prob
         self.switched = False
+        self.model_dir = model_dir
         
     def _on_step(self) -> bool:
         if not self.switched and self.num_timesteps >= self.switch_timestep:
@@ -38,9 +39,8 @@ class SelfPlayCallback(BaseCallback):
                 # First set the opponent type to self_play
                 self.training_env.env_method('__setattr__', 'opponent', 'self_play')
                 
-                # Save the model to a temporary file
-                import os
-                temp_model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp_self_play_model.zip")
+                # Save the model to training-specific directory
+                temp_model_path = os.path.join(self.model_dir, "temp_self_play_model.zip")
                 self.model.save(temp_model_path)
                 
                 # Share the model path instead of the model object
@@ -62,19 +62,19 @@ class ImmediateSelfPlayCallback(BaseCallback):
     Callback to set up self-play immediately for pure self-play mode.
     """
     
-    def __init__(self, self_play_prob=0.8, verbose=0):
+    def __init__(self, self_play_prob=0.8, model_dir=None, verbose=0):
         super(ImmediateSelfPlayCallback, self).__init__(verbose)
         self.self_play_prob = self_play_prob
         self.setup_complete = False
+        self.model_dir = model_dir  # Store model directory
         
     def _on_training_start(self) -> None:
         """Set up self-play environments when training starts."""
         if not self.setup_complete:
             print("Setting up self-play environments...")
             try:
-                # Save the model to a temporary file
-                import os
-                temp_model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp_self_play_model.zip")
+                # Save the model to training-specific directory
+                temp_model_path = os.path.join(self.model_dir, "temp_self_play_model.zip")
                 self.model.save(temp_model_path)
                 
                 # Share the model path instead of the model object
@@ -96,13 +96,14 @@ class EnhancedCurriculumCallback(BaseCallback):
     Uses the config-defined curriculum schedule.
     """
     
-    def __init__(self, curriculum_config=None, verbose=0):
+    def __init__(self, curriculum_config=None, model_dir=None, verbose=0):
         super(EnhancedCurriculumCallback, self).__init__(verbose)
         self.curriculum_config = curriculum_config or CURRICULUM_CONFIG
         self.current_phase = 0
         self.phase_keys = list(self.curriculum_config.keys())
         self.phase_start_timestep = 0
         self.model_set_for_self_play = False
+        self.model_dir = model_dir  # Store model directory
         
     def _on_training_start(self) -> None:
         """Initialize curriculum at training start."""
@@ -694,7 +695,8 @@ def main():
             # Use the enhanced multi-phase curriculum
             enhanced_curriculum_callback = EnhancedCurriculumCallback(
                 curriculum_config=CURRICULUM_CONFIG,
-                verbose=1 if args.verbose else 0
+                verbose=1 if args.verbose else 0,
+                model_dir=model_dir  # Pass model directory
             )
             callbacks.append(enhanced_curriculum_callback)
         else:
@@ -702,7 +704,8 @@ def main():
             self_play_callback = SelfPlayCallback(
                 switch_timestep=args.self_play_start,
                 self_play_prob=args.self_play_prob,
-                verbose=1 if args.verbose else 0
+                verbose=1 if args.verbose else 0,
+                model_dir=model_dir  # Pass model directory
             )
             callbacks.append(self_play_callback)
         
@@ -710,7 +713,8 @@ def main():
         # Add callback to set up self-play immediately when training starts
         immediate_self_play_callback = ImmediateSelfPlayCallback(
             self_play_prob=args.self_play_prob,
-            verbose=1 if args.verbose else 0
+            verbose=1 if args.verbose else 0,
+            model_dir=model_dir  # Pass model directory
         )
         callbacks.append(immediate_self_play_callback)
     
