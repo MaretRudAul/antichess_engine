@@ -122,29 +122,51 @@ class EnhancedCurriculumCallback(BaseCallback):
         self._update_phase_if_needed()
         return True
     
-    def _update_phase_if_needed(self):
-        """Update the training phase if we've reached the next milestone."""
+    def _apply_phase_configuration(self):
+        """Apply the configuration for the current phase."""
         if self.current_phase >= len(self.phase_keys):
-            return  # Already at final phase
+            return
             
-        current_phase_key = self.phase_keys[self.current_phase]
-        current_phase_config = self.curriculum_config[current_phase_key]
+        phase_key = self.phase_keys[self.current_phase]
+        phase_config = self.curriculum_config[phase_key]
+        opponent_mix = phase_config["opponent_mix"]
         
-        # Check if we should advance to next phase
-        timesteps_in_phase = self.num_timesteps - self.phase_start_timestep
-        phase_duration = current_phase_config["timesteps"]
+        if self.verbose > 0:
+            print(f"   Applying {phase_key} configuration:")
+            for opponent, prob in opponent_mix.items():
+                print(f"     {opponent}: {prob:.1%}")
         
-        if timesteps_in_phase >= phase_duration and self.current_phase < len(self.phase_keys) - 1:
-            # Advance to next phase
-            self.current_phase += 1
-            self.phase_start_timestep = self.num_timesteps
-            
-            if self.verbose > 0:
-                next_phase_key = self.phase_keys[self.current_phase]
-                print(f"\nCURRICULUM PHASE TRANSITION at timestep {self.num_timesteps:,}")
-                print(f"   Transitioning from {current_phase_key} to {next_phase_key}")
-            
-            self._apply_phase_configuration()
+        # Update environments based on opponent mix
+        if "self_play" in opponent_mix and opponent_mix["self_play"] > 0:
+            # Enable self-play
+            if not self.model_set_for_self_play:
+                if self.verbose > 0:
+                    print(f"   Setting up self-play with model...")
+                
+                try:
+                    # Save model to training-specific directory
+                    temp_model_path = os.path.join(self.model_dir, "temp_self_play_model.zip")
+                    self.model.save(temp_model_path)
+                    
+                    # Use file-based model sharing instead of direct model passing
+                    self.training_env.env_method('__setattr__', 'opponent', 'self_play')
+                    self.training_env.env_method('set_opponent_model_path', temp_model_path)
+                    self.training_env.env_method('set_self_play_probability', opponent_mix["self_play"])
+                    self.model_set_for_self_play = True
+                except Exception as e:
+                    if self.verbose > 0:
+                        print(f"   Failed to enable self-play: {e}")
+                        print(f"   Continuing with previous opponent type...")
+            else:
+                # Update self-play probability
+                try:
+                    self.training_env.env_method('set_self_play_probability', opponent_mix["self_play"])
+                except Exception as e:
+                    if self.verbose > 0:
+                        print(f"   Failed to update self-play probability: {e}")
+        
+        if self.verbose > 0:
+            print(f"   Phase {phase_key} activated")
     
     def _apply_phase_configuration(self):
         """Apply the configuration for the current phase."""
@@ -553,7 +575,7 @@ def main():
     print(f"   Opponent Strategy: {args.opponent}")
     print(f"   Total Timesteps: {args.total_timesteps:,}")
     print(f"   Parallel Environments: {args.num_envs}")
-    print(f"   Learning Rate: Scheduled (linear decay from 3e-4)")
+    print(f"   Learning Rate: Combined linear+cosine schedule (3e-4 → 1e-6)")
     
     if args.opponent == "curriculum":
         if args.use_enhanced_curriculum:
