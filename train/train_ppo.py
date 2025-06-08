@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
 from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG
+from schedules.schedules import CurriculumAwareSchedule
 
 class SelfPlayCallback(BaseCallback):
     """
@@ -168,46 +169,34 @@ class EnhancedCurriculumCallback(BaseCallback):
         if self.verbose > 0:
             print(f"   Phase {phase_key} activated")
     
-    def _apply_phase_configuration(self):
-        """Apply the configuration for the current phase."""
+    def _update_phase_if_needed(self):
+        """Check if we need to advance to the next curriculum phase and update if needed."""
         if self.current_phase >= len(self.phase_keys):
             return
             
-        phase_key = self.phase_keys[self.current_phase]
-        phase_config = self.curriculum_config[phase_key]
-        opponent_mix = phase_config["opponent_mix"]
+        # Get current phase configuration
+        current_phase_key = self.phase_keys[self.current_phase]
+        current_phase = self.curriculum_config[current_phase_key]
         
-        if self.verbose > 0:
-            print(f"   Applying {phase_key} configuration:")
-            for opponent, prob in opponent_mix.items():
-                print(f"     {opponent}: {prob:.1%}")
-        
-        # Update environments based on opponent mix
-        if "self_play" in opponent_mix and opponent_mix["self_play"] > 0:
-            # Enable self-play
-            if not self.model_set_for_self_play:
+        # Check if we need to advance to the next phase
+        phase_duration = current_phase["timesteps"]
+        if self.num_timesteps >= self.phase_start_timestep + phase_duration:
+            # Time to advance to next phase
+            if self.current_phase + 1 < len(self.phase_keys):
                 if self.verbose > 0:
-                    print(f"   Setting up self-play with model...")
+                    next_phase_key = self.phase_keys[self.current_phase + 1]
+                    print(f"\nCURRICULUM PHASE TRANSITION at timestep {self.num_timesteps:,}")
+                    print(f"   Transitioning from {current_phase_key} to {next_phase_key}")
                 
-                try:
-                    self.training_env.env_method('set_opponent_model', self.model)
-                    self.training_env.env_method('__setattr__', 'opponent', 'self_play')
-                    self.training_env.env_method('set_self_play_probability', opponent_mix["self_play"])
-                    self.model_set_for_self_play = True
-                except Exception as e:
-                    if self.verbose > 0:
-                        print(f"   Failed to enable self-play: {e}")
-                        print(f"   Continuing with previous opponent type...")
-            else:
-                # Update self-play probability
-                try:
-                    self.training_env.env_method('set_self_play_probability', opponent_mix["self_play"])
-                except Exception as e:
-                    if self.verbose > 0:
-                        print(f"   Failed to update self-play probability: {e}")
-        
-        if self.verbose > 0:
-            print(f"   Phase {phase_key} activated")
+                # Update phase and starting timestep
+                self.current_phase += 1
+                self.phase_start_timestep = self.num_timesteps
+                
+                # Apply the new phase configuration
+                self._apply_phase_configuration()
+        elif self.current_phase == 0 and self.num_timesteps == 0:
+            # Initial phase setup
+            self._apply_phase_configuration()
     
     def _print_curriculum_schedule(self):
         """Print the full curriculum schedule."""
@@ -544,14 +533,21 @@ def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
     
     return TRAINING_PARAMS["checkpoint_freq"]
 
-def create_new_model(env, log_dir, device="auto"):
+def create_new_model(env, log_dir, device="auto", lr_schedule=None):
     """Create a new PPO model with the configured parameters"""
     print("Creating PPO agent with learning rate scheduling...")
+    
+    # Create a copy of PPO parameters
+    ppo_params = dict(PPO_PARAMS)
+    
+    # Override learning rate if provided
+    if lr_schedule is not None:
+        ppo_params["learning_rate"] = lr_schedule
     
     model = PPO(
         MaskedActorCriticPolicy,
         env,
-        **PPO_PARAMS,
+        **ppo_params,
         tensorboard_log=log_dir,
         device=device,
         verbose=1
@@ -590,6 +586,18 @@ def main():
         print(f"   Random opponent: {args.random_prob:.1%}")
         print(f"   Heuristic opponent: {args.heuristic_prob:.1%}")
         print(f"   Self-play opponent: {1.0 - args.random_prob - args.heuristic_prob:.1%}")
+    
+    curriculum_lr_schedule = None
+    if args.opponent == "curriculum" and args.use_enhanced_curriculum:
+        print("   Using curriculum-aware learning rate schedule:")
+        print("     Phase 1 (Random): Linear schedule")
+        print("     Phase 2 (Mixed): Linear schedule")
+        print("     Phase 3 (Self-play): Cosine annealing")
+        curriculum_lr_schedule = CurriculumAwareSchedule(
+            3e-4, 1e-6, CURRICULUM_CONFIG, args.total_timesteps
+        )
+    else:
+        print("   Using combined linear+cosine schedule (60% linear, 40% cosine)")
     
     # Set device
     if args.device == "auto":
@@ -794,7 +802,7 @@ def main():
             remaining_steps = args.total_timesteps
     else:
         print("No checkpoint found. Starting new training...")
-        model = create_new_model(env, log_dir, device=device)
+        model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule)
         remaining_steps = args.total_timesteps
     
     print(f"Starting training for {remaining_steps:,} timesteps...")
@@ -823,7 +831,10 @@ def main():
     print("Training Summary:")
     print(f"   Total Timesteps: {args.total_timesteps:,}")
     print(f"   Opponent Strategy: {args.opponent}")
-    print(f"   Learning Rate: Scheduled (linear decay)")
+    if args.opponent == "curriculum" and args.use_enhanced_curriculum:
+        print(f"   Learning Rate: Curriculum-aligned (linear→linear→cosine)")
+    else:
+        print(f"   Learning Rate: Combined linear+cosine schedule")
     print(f"   Final Model: {final_model_path}")
     print(f"   Training Logs: {log_dir}")
     print(f"   TensorBoard: tensorboard --logdir {log_dir}")
