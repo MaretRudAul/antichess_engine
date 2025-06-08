@@ -19,6 +19,9 @@ from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
 from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG
 from schedules.schedules import CurriculumAwareSchedule
 
+import torch.multiprocessing as mp
+from copy import deepcopy
+
 class SelfPlayCallback(BaseCallback):
     """
     Callback to introduce self-play during training.
@@ -445,4 +448,51 @@ class GradientMonitorCallback(BaseCallback):
                         )
                         self.model.save(emergency_path)
         
+        return True
+    
+class UpdateSelfPlayModelCallback(BaseCallback):
+    """Efficient self-play model updates using shared memory."""
+    
+    def __init__(self, update_freq=50_000, model_dir=None, verbose=0):
+        super(UpdateSelfPlayModelCallback, self).__init__(verbose)
+        self.update_freq = update_freq
+        self.model_dir = model_dir
+        self.last_update = 0
+        self.shared_weights = None
+        
+    def _on_training_start(self):
+        """Initialize shared dictionary for weights."""
+        # Create shared weights at the beginning
+        self.shared_weights = {}
+        for name, param in self.model.policy.state_dict().items():
+            # Move to CPU for sharing and make shared
+            self.shared_weights[name] = param.cpu().clone().share_memory_()
+        
+        # Initialize environments with the shared weights structure
+        try:
+            self.training_env.env_method('initialize_shared_weights', self.shared_weights)
+            print("Self-play environments initialized with shared weights")
+        except Exception as e:
+            print(f"Failed to initialize shared weights: {e}")
+        
+    def _on_step(self) -> bool:
+        # Check if it's time to update the model
+        if (self.num_timesteps - self.last_update) >= self.update_freq:
+            print(f"\nUPDATING SELF-PLAY MODEL at timestep {self.num_timesteps:,}")
+            
+            try:
+                # Update the shared weights with current model weights
+                with torch.no_grad():
+                    for name, param in self.model.policy.state_dict().items():
+                        if name in self.shared_weights:
+                            self.shared_weights[name].copy_(param.cpu())
+                
+                # Signal environments that weights were updated
+                self.training_env.env_method('notify_weights_updated')
+                print(f"   Self-play model updated at step {self.num_timesteps:,}")
+                self.last_update = self.num_timesteps
+                
+            except Exception as e:
+                print(f"   Failed to update self-play model: {e}")
+            
         return True

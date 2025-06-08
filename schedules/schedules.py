@@ -144,6 +144,7 @@ class CurriculumAwareSchedule:
         # Calculate phase transition points as percentage of training
         self.phase1_end_pct = curriculum_config["phase_1"]["timesteps"] / total_timesteps
         self.phase2_end_pct = self.phase1_end_pct + (curriculum_config["phase_2"]["timesteps"] / total_timesteps)
+        self.phase3_end_pct = self.phase2_end_pct + (curriculum_config["phase_3"]["timesteps"] / total_timesteps)
     
     def __call__(self, progress_remaining: float) -> float:
         """
@@ -199,9 +200,31 @@ class CurriculumAwareSchedule:
             # Blend the two learning rates
             return phase2_lr * (1 - blend_factor) + phase3_lr * blend_factor
         
-        # Phase 3: Cosine schedule for fine-tuning with self-play
+        # Phase 3: Linear schedule (adding support for Phase 4)
+        elif progress < self.phase3_end_pct - transition_window:
+            # Rescale progress for this phase
+            phase_progress = (progress - self.phase2_end_pct) / (self.phase3_end_pct - self.phase2_end_pct)
+            phase_remaining = 1.0 - phase_progress
+            return self.linear_schedule(phase_remaining)
+        
+        # Transition from Phase 3 to Phase 4
+        elif progress < self.phase3_end_pct + transition_window:
+            # Blend phase 3 and 4 learning rates
+            blend_factor = (progress - (self.phase3_end_pct - transition_window)) / (2 * transition_window)
+            
+            # Calculate each phase's learning rate
+            phase3_progress = (progress - self.phase2_end_pct) / (self.phase3_end_pct - self.phase2_end_pct)
+            phase3_lr = self.linear_schedule(1.0 - phase3_progress)
+            
+            phase4_progress = (progress - self.phase3_end_pct) / (1.0 - self.phase3_end_pct)
+            phase4_lr = self.cosine_schedule(1.0 - phase4_progress)
+            
+            # Blend the two learning rates
+            return phase3_lr * (1 - blend_factor) + phase4_lr * blend_factor
+        
+        # Phase 4: Cosine schedule for final phase
         else:
             # Rescale progress for final phase
-            phase_progress = (progress - self.phase2_end_pct) / (1.0 - self.phase2_end_pct)
+            phase_progress = (progress - self.phase3_end_pct) / (1.0 - self.phase3_end_pct)
             phase_remaining = 1.0 - phase_progress
             return self.cosine_schedule(phase_remaining)

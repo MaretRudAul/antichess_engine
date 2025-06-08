@@ -268,7 +268,6 @@ python -m train.train_ppo --opponent self_play --self-play-prob 0.9
 - Integration with chess GUIs for human vs. AI play
 - MCTS integration for hybrid approach
 - Use Ray framework for distributed RL
-- Update self-play to use updating opponent?
 
 ## Contributing
 

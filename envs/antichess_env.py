@@ -6,6 +6,8 @@ from typing import Dict, Any, Tuple, Optional
 from antichess.board import AntichessBoard, Move, Player, PieceType
 from antichess.utils import encode_board, action_to_move, legal_moves_mask
 
+import torch
+
 class AntichessEnv(gym.Env):
     """
     A Gym environment for the game of Antichess.
@@ -350,3 +352,40 @@ class AntichessEnv(gym.Env):
             A binary array of shape (4096,) where 1s indicate legal actions
         """
         return legal_moves_mask(self.board)
+
+    def initialize_shared_weights(self, shared_weights):
+        """Set up shared weights structure for efficient self-play updates."""
+        self.shared_weights = shared_weights
+        
+        if not hasattr(self, '_opponent_model'):
+            # Create an empty model if we don't have one
+            from stable_baselines3 import PPO
+            from models.custom_policy import MaskedActorCriticPolicy
+            self._opponent_model = PPO(
+                MaskedActorCriticPolicy,
+                self,
+                verbose=0
+            )
+        
+        # Initial update with shared weights
+        self._load_from_shared_weights()
+
+    def notify_weights_updated(self):
+        """Called when shared weights have been updated."""
+        if hasattr(self, 'shared_weights'):
+            self._load_from_shared_weights()
+            
+    def _load_from_shared_weights(self):
+        """Load model from shared weights."""
+        if self.opponent != "self_play" or not hasattr(self, 'shared_weights'):
+            return
+            
+        try:
+            # Load weights from shared memory into model
+            with torch.no_grad():
+                current_state = self._opponent_model.policy.state_dict()
+                for name, param in current_state.items():
+                    if name in self.shared_weights:
+                        current_state[name].copy_(self.shared_weights[name])
+        except Exception as e:
+            print(f"Error loading from shared weights: {e}")
