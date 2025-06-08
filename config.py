@@ -43,20 +43,24 @@ TRAINING_PARAMS = {
 # Curriculum stages for mixed training
 CURRICULUM_CONFIG = {
     # Global learning rate parameters
-    "lr_initial": 1e-4,
-    "lr_final": 1e-6,
+    "lr_initial": 5e-5,
+    "lr_final": 1e-5,
     
     # Phase definitions
     "phase_1": {
-        "timesteps": int(0.3 * 2_000_000),  # 30% of training
+        "timesteps": int(0.15 * 2_000_000),  # 15% of training
         "opponent_mix": {"random": 1.0}
     },
     "phase_2": {
-        "timesteps": int(0.6 * 2_000_000),  # 30% of training
-        "opponent_mix": {"random": 0.7, "heuristic": 0.3}
+        "timesteps": int(0.35 * 2_000_000),  # 20% of training
+        "opponent_mix": {"random": 0.4, "heuristic": 0.6}
     },
     "phase_3": {
+        "timesteps": int(0.60 * 2_000_000),  # 25% of training
+        "opponent_mix": {"random": 0.25, "heuristic": 0.25, "self_play": 0.5}
+    },
+    "phase_4": {
         "timesteps": float('inf'),  # Remaining 40% of training
-        "opponent_mix": {"random": 0.3, "heuristic": 0.3, "self_play": 0.4}
+        "opponent_mix": {"random": 0.1, "heuristic": 0.1, "self_play": 0.8}
     }
 }
