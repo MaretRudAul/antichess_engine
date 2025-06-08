@@ -24,7 +24,8 @@ from callbacks.callbacks import (
     SelfPlayCallback,
     ImmediateSelfPlayCallback,
     EnhancedCurriculumCallback,
-    GradientMonitorCallback
+    GradientMonitorCallback,
+    UpdateSelfPlayModelCallback
 )
 
 
@@ -97,6 +98,9 @@ def parse_args():
     
     parser.add_argument("--verbose", action="store_true",
                        help="Enable verbose output")
+
+    parser.add_argument("--self-play-update-freq", type=int, default=TRAINING_PARAMS["self_play_update_freq"],
+                   help="Update self-play model every N timesteps")
     
     return parser.parse_args()
 
@@ -232,8 +236,9 @@ def main():
     if args.opponent == "curriculum" and args.use_enhanced_curriculum:
         print("   Using curriculum-aware learning rate schedule:")
         print("     Phase 1 (Random): Linear schedule")
-        print("     Phase 2 (Mixed): Linear schedule")
-        print("     Phase 3 (Self-play): Cosine annealing")
+        print("     Phase 2 (Mixed: random, heuristic): Linear schedule")
+        print("     Phase 3 (Mixed: random, heuristic, self-play): Cosine annealing")
+        print("     Phase 4 (Mixed: majority self-play): Cosine annealing")
         curriculum_lr_schedule = CurriculumAwareSchedule(
             CURRICULUM_CONFIG["lr_initial"], 
             CURRICULUM_CONFIG["lr_final"], 
@@ -242,6 +247,9 @@ def main():
         )
     else:
         print("   Using combined linear+cosine schedule (60% linear, 40% cosine)")
+
+    if args.opponent == "curriculum" or args.opponent == "self_play":
+        print(f"   Self-play model update frequency: {args.self_play_update_freq:,}")
     
     # Set device
     if args.device == "auto":
@@ -340,33 +348,16 @@ def main():
         monitor_dir=os.path.join(log_dir, "eval")
     )
     
+    # Replace the callback initialization section with this improved version:
+
     # Initialize callbacks list AFTER environment creation
     callbacks = []
 
+    # First callback: Gradient monitoring (this is fine to keep first)
     gradient_monitor = GradientMonitorCallback(warning_threshold=100.0, verbose=1 if args.verbose else 0)
     callbacks.append(gradient_monitor)
-    
-    # Add evaluation callback
-    eval_callback = MaskedEvalCallback(
-        eval_env=eval_env,
-        eval_freq=args.eval_freq,
-        n_eval_episodes=TRAINING_PARAMS["n_eval_episodes"],
-        best_model_save_path=model_dir,
-        log_path=log_dir,
-        verbose=1
-    )
-    callbacks.append(eval_callback)
-    
-    # Add checkpoint callback
-    checkpoint_callback = CheckpointCallback(
-        save_freq=args.checkpoint_freq,
-        save_path=model_dir,
-        name_prefix="antichess_model",
-        verbose=1 if args.verbose else 0
-    )
-    callbacks.append(checkpoint_callback)
-    
-    # Add opponent-specific callbacks
+
+    # Second: Add curriculum/opponent setup callbacks BEFORE evaluation
     if args.opponent == "curriculum":
         if args.use_enhanced_curriculum:
             # Use the enhanced multi-phase curriculum
@@ -394,6 +385,35 @@ def main():
             model_dir=model_dir  # Pass model directory
         )
         callbacks.append(immediate_self_play_callback)
+
+    # Third: Add self-play model updates for ALL modes that might use self-play
+    if args.opponent in ["self_play", "curriculum", "mixed"]:
+        update_self_play_callback = UpdateSelfPlayModelCallback(
+            update_freq=args.self_play_update_freq,
+            model_dir=model_dir,
+            verbose=1 if args.verbose else 0
+        )
+        callbacks.append(update_self_play_callback)
+
+    # Fourth: Add evaluation callback AFTER environment setup is complete
+    eval_callback = MaskedEvalCallback(
+        eval_env=eval_env,
+        eval_freq=args.eval_freq,
+        n_eval_episodes=TRAINING_PARAMS["n_eval_episodes"],
+        best_model_save_path=model_dir,
+        log_path=log_dir,
+        verbose=1
+    )
+    callbacks.append(eval_callback)
+
+    # Fifth: Add checkpoint callback (order doesn't matter as much here)
+    checkpoint_callback = CheckpointCallback(
+        save_freq=args.checkpoint_freq,
+        save_path=model_dir,
+        name_prefix="antichess_model",
+        verbose=1 if args.verbose else 0
+    )
+    callbacks.append(checkpoint_callback)
     
     if args.resume_from is not None:
         checkpoint_path = args.resume_from
