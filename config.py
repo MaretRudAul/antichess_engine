@@ -10,16 +10,16 @@ This file centralizes all hyperparameters and constants.
 
 # PPO Algorithm Hyperparameters - CORRECT FUNCTIONS FOR SB3 v2.6.0
 PPO_PARAMS = {
-    "learning_rate": CombinedSchedule(3e-4, 1e-6, linear_pct=0.6),  # Custom picklable linear schedule
+    "learning_rate": CombinedSchedule(1e-4, 1e-6, linear_pct=0.6),  # Custom picklable linear schedule
     "n_steps": 2048,
-    "batch_size": 64,
-    "n_epochs": 4,
+    "batch_size": 128,
+    "n_epochs": 10,
     "gamma": 0.99,
     "gae_lambda": 0.95,
     "clip_range": 0.2,
     "clip_range_vf": None,
-    "ent_coef": 0.02,
-    "vf_coef": 0.5,
+    "ent_coef": 0.01,
+    "vf_coef": 1.0,
     "max_grad_norm": 0.5,
     "policy_kwargs": {
         "features_extractor_class": ChessCNN,
@@ -42,6 +42,11 @@ TRAINING_PARAMS = {
 
 # Curriculum stages for mixed training
 CURRICULUM_CONFIG = {
+    # Global learning rate parameters
+    "lr_initial": 1e-4,
+    "lr_final": 1e-6,
+    
+    # Phase definitions
     "phase_1": {
         "timesteps": int(0.3 * 2_000_000),  # 30% of training
         "opponent_mix": {"random": 1.0}

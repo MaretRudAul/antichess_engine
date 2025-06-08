@@ -594,7 +594,10 @@ def main():
         print("     Phase 2 (Mixed): Linear schedule")
         print("     Phase 3 (Self-play): Cosine annealing")
         curriculum_lr_schedule = CurriculumAwareSchedule(
-            3e-4, 1e-6, CURRICULUM_CONFIG, args.total_timesteps
+            CURRICULUM_CONFIG["lr_initial"], 
+            CURRICULUM_CONFIG["lr_final"], 
+            CURRICULUM_CONFIG, 
+            args.total_timesteps
         )
     else:
         print("   Using combined linear+cosine schedule (60% linear, 40% cosine)")
