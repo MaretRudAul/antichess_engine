@@ -38,6 +38,7 @@ TRAINING_PARAMS = {
     "checkpoint_freq": 400000,
     "self_play_start_step": 400_000,
     "self_play_probability": 0.8,
+    "self_play_update_freq": 50_000,
 }
 
 # Curriculum stages for mixed training
