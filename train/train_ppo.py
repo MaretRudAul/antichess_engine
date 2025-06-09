@@ -16,9 +16,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
-from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG
+from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG, load_optimized_hyperparameters
 from schedules.schedules import CurriculumAwareSchedule
-from hyperopt.config_loader import load_optimized_hyperparameters
 
 from callbacks.callbacks import (
     MaskedEvalCallback,

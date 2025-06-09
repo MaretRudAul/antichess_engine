@@ -5,6 +5,7 @@ This project implements a sophisticated reinforcement learning agent for the che
 ## Key Features
 
 - **Advanced Curriculum Learning**: Multi-phase training progression from random opponents to self-play
+- **Hyperparameter Optimization**: Automated Bayesian optimization using Optuna for optimal training configuration
 - **Adaptive Learning Rate Scheduling**: Combined linear and cosine annealing with curriculum-aware transitions
 - **Action Masking**: Ensures only legal moves are selected, dramatically improving sample efficiency
 - **Self-Play Training**: Progressive opponent strategies including model-based self-play
@@ -38,7 +39,12 @@ antichess_engine/
 ├── schedules/           # Learning rate schedules
 │   ├── __init__.py
 │   └── schedules.py     # Linear, cosine, and curriculum-aware schedules
-├── config.py            # Centralized hyperparameters and configuration
+├── hyperopt/            # Hyperparameter optimization
+│   ├── __init__.py
+│   ├── optimize.py      # Optuna-based hyperparameter optimization
+│   ├── manage.py        # Results management and comparison
+│   └── defaults.json    # Default configuration parameters
+├── config.py            # Centralized configuration and hyperparameter loading
 ├── requirements.txt     # Python dependencies
 ├── .gitignore          # Git ignore patterns
 └── README.md
@@ -205,6 +211,93 @@ python -m train.train_ppo --opponent self_play --self-play-prob 0.9
 # Frequent model updates for self-play diversity
 python -m train.train_ppo --opponent curriculum --self-play-update-freq 25000
 ```
+
+## Hyperparameter Optimization
+
+The project includes a comprehensive hyperparameter optimization system using **Optuna** for Bayesian optimization. This can significantly improve training performance by finding optimal hyperparameters automatically.
+
+### Quick Start with Hyperparameter Optimization
+
+```bash
+# 1. Run hyperparameter optimization
+python -m hyperopt.optimize --n-trials 50 --training-timesteps 200000
+
+# 2. Train with optimized hyperparameters (automatically loaded)
+python -m train.train_ppo --opponent curriculum --total-timesteps 2000000
+
+# 3. Or manually specify optimization results
+python -m train.train_ppo --hyperopt-path hyperopt_results/optimization_results_20231208_143022.json
+```
+
+### Hyperparameter Optimization Features
+
+- **Bayesian Optimization**: Uses TPE (Tree-structured Parzen Estimator) for efficient search
+- **Early Stopping**: Prunes poor trials using median pruning for faster optimization
+- **Extensive Search Space**: Optimizes 15+ hyperparameters including:
+  - Learning rates (initial, final, schedule type)
+  - Network architecture (layer sizes, feature dimensions)
+  - PPO parameters (batch size, epochs, regularization)
+  - Training parameters (gamma, GAE lambda, clipping)
+- **Automatic Integration**: Optimized parameters are automatically loaded when available
+- **Trial Management**: Save, load, and compare optimization results
+
+### Running Hyperparameter Optimization
+
+```bash
+# Full optimization with 100 trials (recommended)
+python -m hyperopt.optimize
+
+# Quick optimization with fewer trials
+python -m hyperopt.optimize --n-trials 25 --training-timesteps 100000
+
+# Parallel optimization (if you have multiple GPUs/cores)
+python -m hyperopt.optimize --n-jobs 2
+
+# Resume existing optimization study
+python -m hyperopt.optimize --study-name my_study --load-study
+
+# View results of completed optimization
+python -m hyperopt.optimize --show-results --study-name antichess_hyperopt
+```
+
+### Managing Optimization Results
+
+```bash
+# List all optimization results
+python -c "from hyperopt.manage import list_optimization_results; print(list_optimization_results())"
+
+# Compare multiple optimization runs
+python -c "from hyperopt.manage import compare_optimization_results; compare_optimization_results(['result1.json', 'result2.json'])"
+
+# Set environment variable to always use optimized hyperparameters
+export ANTICHESS_HYPEROPT_PATH="hyperopt_results/best_results.json"
+```
+
+### Hyperparameter Search Spaces
+
+The optimization searches over these parameter ranges:
+
+- **Learning Rate**: 1e-6 to 1e-3 (log scale)
+- **Network Architecture**:
+  - Feature dimensions: 256, 512, 1024
+  - Policy layers: 64-1024 neurons per layer
+  - Value layers: 64-1024 neurons per layer
+- **PPO Parameters**:
+  - Batch size: 32, 64, 128, 256
+  - Training epochs: 3-20
+  - Discount factor: 0.9-0.9999
+- **Regularization**:
+  - Entropy coefficient: 1e-6 to 1e-1 (log scale)
+  - Value function coefficient: 0.1-2.0
+  - Gradient clipping: 0.1-2.0
+
+### Optimization Tips
+
+1. **Start Small**: Use `--n-trials 10-25` for initial exploration
+2. **Short Training**: Use `--training-timesteps 100000-200000` for faster trials
+3. **Monitor Progress**: Results are saved incrementally in `hyperopt_results/`
+4. **Multiple Runs**: Run optimization multiple times with different random seeds
+5. **Integration**: Optimized hyperparameters are automatically loaded by `config.py`
 
 ## Complete Command Reference
 

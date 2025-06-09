@@ -14,7 +14,7 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any
 
-from hyperopt.config_loader import find_latest_hyperopt_results
+from config import find_latest_hyperopt_results
 
 
 def list_optimization_results(results_dir: str = "hyperopt_results") -> List[Dict[str, Any]]:

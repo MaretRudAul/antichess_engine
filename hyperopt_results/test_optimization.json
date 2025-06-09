@@ -1,0 +1,27 @@
+{
+  "study_name": "test_hyperopt",
+  "best_value": 0.75,
+  "best_params": {
+    "learning_rate": {
+      "type": "combined",
+      "initial": 0.0002,
+      "final": 0.00001,
+      "linear_pct": 0.7
+    },
+    "n_steps": 2048,
+    "batch_size": 64,
+    "n_epochs": 8,
+    "gamma": 0.995,
+    "gae_lambda": 0.92,
+    "clip_range": 0.15,
+    "ent_coef": 0.005,
+    "vf_coef": 1.2,
+    "max_grad_norm": 0.8,
+    "policy_kwargs": {
+      "features_extractor_kwargs": {"features_dim": 1024},
+      "net_arch": {"pi": [1024, 512, 256], "vf": [1024, 512, 256]}
+    }
+  },
+  "n_trials": 25,
+  "timestamp": "2025-06-08T23:30:00"
+}
