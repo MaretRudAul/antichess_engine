@@ -18,6 +18,7 @@ from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
 from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG
 from schedules.schedules import CurriculumAwareSchedule
+from hyperopt.config_loader import load_optimized_hyperparameters
 
 from callbacks.callbacks import (
     MaskedEvalCallback,
@@ -74,10 +75,13 @@ def parse_args():
     
     parser.add_argument("--checkpoint-freq", type=int, default=TRAINING_PARAMS["checkpoint_freq"],
                        help="Save checkpoint every N timesteps")
-    
-    # Curriculum options
+      # Curriculum options
     parser.add_argument("--use-enhanced-curriculum", action="store_true",
                        help="Use the enhanced multi-phase curriculum from config.py")
+    
+    # Hyperparameter optimization options
+    parser.add_argument("--hyperopt-path", type=str, default=None,
+                       help="Path to hyperparameter optimization results file")
     
     # Hardware options
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"],
@@ -178,12 +182,17 @@ def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
     
     return TRAINING_PARAMS["checkpoint_freq"]
 
-def create_new_model(env, log_dir, device="auto", lr_schedule=None):
+def create_new_model(env, log_dir, device="auto", lr_schedule=None, custom_hyperparams=None):
     """Create a new PPO model with the configured parameters"""
     print("Creating PPO agent with learning rate scheduling...")
     
-    # Create a copy of PPO parameters
+    # Start with default PPO parameters
     ppo_params = dict(PPO_PARAMS)
+    
+    # Override with custom hyperparameters if provided
+    if custom_hyperparams is not None:
+        print("Using custom hyperparameters from optimization results...")
+        ppo_params.update(custom_hyperparams)
     
     # Override learning rate if provided
     if lr_schedule is not None:
@@ -207,6 +216,17 @@ def main():
     """Train a PPO agent to play Antichess with configurable opponents."""
     args = parse_args()
     validate_args(args)
+    
+    # Load custom hyperparameters if specified
+    custom_hyperparams = None
+    if args.hyperopt_path:
+        try:
+            print(f"Loading optimized hyperparameters from: {args.hyperopt_path}")
+            custom_hyperparams = load_optimized_hyperparameters(args.hyperopt_path)
+            print("Successfully loaded custom hyperparameters!")
+        except Exception as e:
+            print(f"Warning: Failed to load hyperparameters from {args.hyperopt_path}: {e}")
+            print("Continuing with default hyperparameters...")
     
     print("Starting Antichess PPO Training with Learning Rate Scheduling")
     print("=" * 60)
@@ -432,8 +452,7 @@ def main():
                 
                 # For manual resume, assume we want to continue training
                 print(f"Resuming training for {args.total_timesteps:,} more steps.")
-                
-                # Handle resumed training for different opponent types
+                  # Handle resumed training for different opponent types
                 if args.opponent == "curriculum" and args.use_enhanced_curriculum:
                     # Re-detect which curriculum phase we should be in
                     print("Applying correct curriculum phase based on current timesteps...")
@@ -448,18 +467,18 @@ def main():
                     except Exception as e:
                         print(f"Failed to setup self-play on resume: {e}")
                         print("Continuing with random opponents...")
-                    
+                        
             except (zipfile.BadZipFile, ValueError, EOFError) as e:
                 print(f"Error loading checkpoint: {e}")
                 print("Starting fresh training instead.")
-                model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule)
+                model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule, custom_hyperparams=custom_hyperparams)
         else:
             print(f"Checkpoint not found: {checkpoint_path}")
             print("Starting fresh training...")
-            model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule)
+            model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule, custom_hyperparams=custom_hyperparams)
     else:
         print("No checkpoint specified. Starting fresh training...")
-        model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule)
+        model = create_new_model(env, log_dir, device=device, lr_schedule=curriculum_lr_schedule, custom_hyperparams=custom_hyperparams)
 
     # Set remaining_steps to full training duration (don't try to calculate remaining)
     remaining_steps = args.total_timesteps

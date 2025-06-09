@@ -446,7 +446,7 @@ python -m train.train_ppo --opponent self_play --self-play-update-freq 25000
 
 ### Planned Enhancements
 
-**Advanced Architectures**: Integration of attention mechanisms and transformer models
+**Advanced Architectures**: Possible integration of attention mechanisms
 
 **Distributed Training**: Ray framework integration for large-scale distributed training
 
