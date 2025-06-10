@@ -33,7 +33,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
 from schedules.schedules import LinearSchedule
-from config import get_training_params
 
 
 class HyperparameterOptimizer:

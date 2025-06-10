@@ -13,6 +13,10 @@ Usage:
     ppo_params = get_ppo_params()  # Uses defaults or optimized values
     training_params = get_training_params() 
     curriculum_config = get_curriculum_config()
+
+TODO: The hyperparameter loading messages may appear multiple times during 
+hyperparameter optimization due to subprocess imports. This is cosmetic only -
+the optimizer uses its own Optuna-generated hyperparameters, not the loaded ones.
 """
 
 import json
@@ -156,13 +160,14 @@ def find_latest_hyperopt_results(results_dir: str = None) -> Optional[str]:
     return latest_file
 
 
-def get_ppo_params(hyperopt_path: str = None) -> Dict[str, Any]:
+def get_ppo_params(hyperopt_path: str = None, verbose: bool = True) -> Dict[str, Any]:
     """
     Get PPO parameters from defaults or optimized results.
     
     Args:
         hyperopt_path: Path to hyperparameter optimization results file.
                       If None, checks environment variable or auto-finds latest.
+        verbose: Whether to print loading messages (default: True)
     
     Returns:
         Dictionary of PPO parameters ready for model creation
@@ -187,17 +192,19 @@ def get_ppo_params(hyperopt_path: str = None) -> Dict[str, Any]:
         # If still None, try to find latest results
         if hyperopt_path is None:
             hyperopt_path = find_latest_hyperopt_results()
-    
-    # Load optimized parameters if available
+      # Load optimized parameters if available
     if hyperopt_path and os.path.exists(hyperopt_path):
         try:
-            print(f"Loading optimized hyperparameters from: {hyperopt_path}")
+            if verbose:
+                print(f"Loading optimized hyperparameters from: {hyperopt_path}")
             optimized_params = load_optimized_hyperparameters(hyperopt_path)
             ppo_params.update(optimized_params)
-            print("Successfully loaded optimized hyperparameters!")
+            if verbose:
+                print("Successfully loaded optimized hyperparameters!")
         except Exception as e:
-            print(f"Warning: Failed to load optimized hyperparameters: {e}")
-            print("Using default hyperparameters...")
+            if verbose:
+                print(f"Warning: Failed to load optimized hyperparameters: {e}")
+                print("Using default hyperparameters...")
     
     return ppo_params
 
@@ -230,7 +237,10 @@ def get_default_curriculum_config() -> Dict[str, Any]:
     return get_curriculum_config()
 
 
-# Provide direct access to configurations for convenience
-PPO_PARAMS = get_ppo_params()
-TRAINING_PARAMS = get_training_params()
-CURRICULUM_CONFIG = get_curriculum_config()
+# Direct access to configurations - use functions instead of globals to avoid
+# loading messages on every import. If you need cached access, call the functions
+# and store the result locally in your code.
+# 
+# Example usage:
+#   from config import get_ppo_params, get_training_params, get_curriculum_config
+#   ppo_params = get_ppo_params()  # Only prints messages when actually called
