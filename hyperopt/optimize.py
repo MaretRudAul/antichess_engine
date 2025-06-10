@@ -46,7 +46,6 @@ class HyperparameterOptimizer:
     - Evaluating trial performance
     - Saving and loading optimization results
     """
-    
     def __init__(
         self,
         study_name: str = "antichess_hyperopt",
@@ -54,7 +53,8 @@ class HyperparameterOptimizer:
         n_trials: int = 100,
         n_jobs: int = 1,
         sampler: Optional[optuna.samplers.BaseSampler] = None,
-        pruner: Optional[optuna.pruners.BasePruner] = None
+        pruner: Optional[optuna.pruners.BasePruner] = None,
+        load_if_exists: bool = True
     ):
         """
         Initialize the hyperparameter optimizer.
@@ -66,22 +66,22 @@ class HyperparameterOptimizer:
             n_jobs: Number of parallel optimization jobs
             sampler: Optuna sampler (defaults to TPESampler)
             pruner: Optuna pruner (defaults to MedianPruner)
-        """
+        """        
         self.study_name = study_name
         self.storage = storage
         self.n_trials = n_trials
         self.n_jobs = n_jobs
-        
-        # Set default sampler and pruner if not provided
-        self.sampler = sampler or TPESampler(n_startup_trials=10, n_ei_candidates=24)
-        self.pruner = pruner or MedianPruner(n_startup_trials=10, n_warmup_steps=20)
+        self.load_if_exists = load_if_exists
+          # Set default sampler and pruner optimized for limited budget
+        self.sampler = sampler or TPESampler(n_startup_trials=5, n_ei_candidates=50)
+        self.pruner = pruner or MedianPruner(n_startup_trials=5, n_warmup_steps=15)
         
         # Training configuration for optimization
         self.optimization_config = {
-            "total_timesteps": 200_000,  # Short training for quick evaluation
-            "num_envs": 4,  # Fewer environments for faster trials
-            "eval_freq": 10_000,  # Frequent evaluation
-            "n_eval_episodes": 20,  # Moderate evaluation episodes
+            "total_timesteps": 2_000_000,  # 2M timesteps for thorough evaluation
+            "num_envs": 4,  # Balanced for GPU memory
+            "eval_freq": 40_000,  # More frequent evaluation for better pruning
+            "n_eval_episodes": 12,  # Reliable evaluation
             "opponent": "random",  # Simple opponent for initial optimization
         }
         
@@ -100,12 +100,12 @@ class HyperparameterOptimizer:
             Dictionary of suggested hyperparameters
         """
         # Learning rate optimization
-        lr_initial = trial.suggest_float("lr_initial", 1e-6, 1e-3, log=True)
-        lr_final = trial.suggest_float("lr_final", 1e-7, lr_initial * 0.1, log=True)
+        lr_initial = trial.suggest_float("lr_initial", 5e-6, 5e-3, log=True)
+        lr_final = trial.suggest_float("lr_final", 1e-8, lr_initial * 0.05, log=True)
         
         # PPO-specific hyperparameters
-        n_steps = trial.suggest_categorical("n_steps", [512, 1024, 2048, 4096])
-        batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
+        n_steps = trial.suggest_categorical("n_steps", [256, 512, 1024, 2048, 4096, 8192])
+        batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256, 512, 1024])
         n_epochs = trial.suggest_int("n_epochs", 3, 20)
         
         # Ensure batch_size doesn't exceed n_steps * num_envs
@@ -113,27 +113,26 @@ class HyperparameterOptimizer:
         if batch_size > max_batch_size:
             batch_size = max_batch_size
         
-        gamma = trial.suggest_float("gamma", 0.9, 0.9999)
-        gae_lambda = trial.suggest_float("gae_lambda", 0.8, 0.99)
-        clip_range = trial.suggest_float("clip_range", 0.1, 0.4)
+        gamma = trial.suggest_float("gamma", 0.90, 0.9999)
+        gae_lambda = trial.suggest_float("gae_lambda", 0.80, 0.99)
+        clip_range = trial.suggest_float("clip_range", 0.1, 0.5)
         
         # Regularization parameters
         ent_coef = trial.suggest_float("ent_coef", 1e-6, 1e-1, log=True)
         vf_coef = trial.suggest_float("vf_coef", 0.1, 2.0)
         max_grad_norm = trial.suggest_float("max_grad_norm", 0.1, 2.0)
+          # Network architecture - comprehensive search space
+        features_dim = trial.suggest_categorical("features_dim", [128, 256, 384, 512, 768, 1024, 1536])
         
-        # Network architecture
-        features_dim = trial.suggest_categorical("features_dim", [256, 512, 1024])
+        # Policy network architecture - maximum diversity
+        pi_layer1 = trial.suggest_categorical("pi_layer1", [128, 256, 384, 512, 768, 1024, 1536])
+        pi_layer2 = trial.suggest_categorical("pi_layer2", [64, 128, 192, 256, 384, 512, 768])
+        pi_layer3 = trial.suggest_categorical("pi_layer3", [32, 64, 96, 128, 192, 256, 384])
         
-        # Policy network architecture
-        pi_layer1 = trial.suggest_categorical("pi_layer1", [256, 512, 1024])
-        pi_layer2 = trial.suggest_categorical("pi_layer2", [128, 256, 512])
-        pi_layer3 = trial.suggest_categorical("pi_layer3", [64, 128, 256])
-        
-        # Value network architecture
-        vf_layer1 = trial.suggest_categorical("vf_layer1", [256, 512, 1024])
-        vf_layer2 = trial.suggest_categorical("vf_layer2", [128, 256, 512])
-        vf_layer3 = trial.suggest_categorical("vf_layer3", [64, 128, 256])
+        # Value network architecture - independent optimization
+        vf_layer1 = trial.suggest_categorical("vf_layer1", [128, 256, 384, 512, 768, 1024, 1536])
+        vf_layer2 = trial.suggest_categorical("vf_layer2", [64, 128, 192, 256, 384, 512, 768])
+        vf_layer3 = trial.suggest_categorical("vf_layer3", [32, 64, 96, 128, 192, 256, 384])
         
         return {
             "learning_rate": LinearSchedule(lr_initial, lr_final),
@@ -154,14 +153,12 @@ class HyperparameterOptimizer:
                     vf=[vf_layer1, vf_layer2, vf_layer3]
                 )
             }
-        }
-    
+        }    
     def make_env(self, rank: int, seed: int = 0):
         """Create a single environment for training."""
         def _init():
             env = AntichessEnv(opponent=self.optimization_config["opponent"])
             env.seed(seed + rank)
-            env = Monitor(env)
             return env
         return _init
     
@@ -190,7 +187,8 @@ class HyperparameterOptimizer:
                 def make_eval_env():
                     env = AntichessEnv(opponent=self.optimization_config["opponent"])
                     env.seed(trial.number + 1000)
-                    return Monitor(env)
+                    # Don't wrap with Monitor here - VecMonitor will handle monitoring
+                    return env
                 
                 eval_env = DummyVecEnv([make_eval_env])
                 eval_env = VecMonitor(eval_env)
@@ -240,14 +238,14 @@ class HyperparameterOptimizer:
         Returns:
             Completed Optuna study
         """
-        # Create or load study
+        # Create or load study based on load_if_exists parameter
         study = optuna.create_study(
             study_name=self.study_name,
             storage=self.storage,
             direction="maximize",
             sampler=self.sampler,
             pruner=self.pruner,
-            load_if_exists=True
+            load_if_exists=self.load_if_exists
         )
         
         print(f"Starting hyperparameter optimization with {self.n_trials} trials...")
@@ -439,7 +437,7 @@ def parse_args():
     parser.add_argument(
         "--n-trials", 
         type=int, 
-        default=100,
+        default=35,
         help="Number of optimization trials to run"
     )
     
@@ -460,14 +458,14 @@ def parse_args():
     parser.add_argument(
         "--training-timesteps", 
         type=int, 
-        default=200_000,
+        default=2_000_000,
         help="Timesteps for each optimization trial"
     )
     
     parser.add_argument(
         "--num-envs", 
         type=int, 
-        default=4,
+        default=8,
         help="Number of parallel environments for each trial"
     )
     
@@ -496,13 +494,13 @@ def parse_args():
 def main():
     """Main function for hyperparameter optimization."""
     args = parse_args()
-    
-    # Create optimizer
+      # Create optimizer
     optimizer = HyperparameterOptimizer(
         study_name=args.study_name,
         storage=args.storage,
         n_trials=args.n_trials,
-        n_jobs=args.n_jobs
+        n_jobs=args.n_jobs,
+        load_if_exists=args.load_study
     )
     
     # Update optimization config with command line arguments

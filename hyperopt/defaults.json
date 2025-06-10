@@ -16,9 +16,8 @@
             "features_extractor_kwargs": {"features_dim": 512},
             "net_arch": {"pi": [512, 256, 128], "vf": [512, 256, 128]}
         }
-    },
-    "training_params": {
-        "total_timesteps": 2000000,
+    },    "training_params": {
+        "total_timesteps": 3000000,
         "num_envs": 8,
         "opponent": "curriculum",
         "eval_freq": 25000,
