@@ -64,8 +64,7 @@ def load_optimized_hyperparameters(filepath: str) -> Dict[str, Any]:
     if "best_params" not in results:
         raise ValueError("Hyperparameter results file missing 'best_params' key")
     
-    params = results["best_params"].copy()
-    # Convert learning rate configuration back to schedule object
+    params = results["best_params"].copy()    # Convert learning rate configuration back to schedule object
     if "learning_rate" in params and isinstance(params["learning_rate"], dict):
         lr_config = params["learning_rate"]
         if lr_config["type"] == "combined":
@@ -83,8 +82,31 @@ def load_optimized_hyperparameters(filepath: str) -> Dict[str, Any]:
             # Fallback to constant learning rate
             params["learning_rate"] = lr_config.get("initial", 3e-4)
     
-    # Convert policy kwargs to proper format
-    if "policy_kwargs" in params:
+    # Extract individual architecture parameters and build policy_kwargs
+    features_dim = params.pop("features_dim", 512)
+    
+    # Extract policy network layers
+    pi_layers = []
+    for i in [1, 2, 3]:
+        if f"pi_layer{i}" in params:
+            pi_layers.append(params.pop(f"pi_layer{i}"))
+    
+    # Extract value network layers  
+    vf_layers = []
+    for i in [1, 2, 3]:
+        if f"vf_layer{i}" in params:
+            vf_layers.append(params.pop(f"vf_layer{i}"))
+    
+    # Build policy_kwargs structure
+    if pi_layers and vf_layers:
+        params["policy_kwargs"] = {
+            "features_extractor_class": ChessCNN,
+            "features_extractor_kwargs": {"features_dim": features_dim},
+            "net_arch": dict(pi=pi_layers, vf=vf_layers)
+        }
+    
+    # Handle existing policy_kwargs if present
+    elif "policy_kwargs" in params:
         policy_kwargs = params["policy_kwargs"]
         
         # Set features extractor class
