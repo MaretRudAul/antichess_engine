@@ -25,7 +25,7 @@ from optuna.samplers import TPESampler
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, DummyVecEnv
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -186,12 +186,14 @@ class HyperparameterOptimizer:
                     self.make_env(i, seed=trial.number) 
                     for i in range(self.optimization_config["num_envs"])
                 ])
-                train_env = VecMonitor(train_env)
+                train_env = VecMonitor(train_env)                # Create evaluation environment (vectorized to match training env)
+                def make_eval_env():
+                    env = AntichessEnv(opponent=self.optimization_config["opponent"])
+                    env.seed(trial.number + 1000)
+                    return Monitor(env)
                 
-                # Create evaluation environment
-                eval_env = AntichessEnv(opponent=self.optimization_config["opponent"])
-                eval_env.seed(trial.number + 1000)
-                eval_env = Monitor(eval_env)
+                eval_env = DummyVecEnv([make_eval_env])
+                eval_env = VecMonitor(eval_env)
                 
                 # Create model with suggested hyperparameters
                 model = PPO(
@@ -280,13 +282,12 @@ class HyperparameterOptimizer:
         
         # Extract best parameters and convert to serializable format
         best_params = study.best_params.copy()
-        
-        # Convert LinearSchedule to serializable format
+          # Convert LinearSchedule to serializable format
         if "lr_initial" in best_params and "lr_final" in best_params:
             best_params["learning_rate"] = {
-                "type": "LinearSchedule",
-                "initial_value": best_params.pop("lr_initial"),
-                "final_value": best_params.pop("lr_final")
+                "type": "linear",
+                "initial": best_params.pop("lr_initial"),
+                "final": best_params.pop("lr_final")
             }
         
         # Create results dictionary
@@ -330,15 +331,14 @@ class HyperparameterOptimizer:
             results = json.load(f)
         
         params = results["best_params"].copy()
-        
-        # Convert learning rate back to schedule object
+          # Convert learning rate back to schedule object
         if "learning_rate" in params and isinstance(params["learning_rate"], dict):
             lr_config = params["learning_rate"]
-            if lr_config["type"] == "LinearSchedule":
+            if lr_config["type"] == "linear":
                 from schedules.schedules import LinearSchedule
                 params["learning_rate"] = LinearSchedule(
-                    lr_config["initial_value"],
-                    lr_config["final_value"]
+                    lr_config["initial"],
+                    lr_config["final"]
                 )
         
         # Ensure policy_kwargs structure is correct

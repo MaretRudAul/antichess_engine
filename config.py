@@ -65,7 +65,6 @@ def load_optimized_hyperparameters(filepath: str) -> Dict[str, Any]:
         raise ValueError("Hyperparameter results file missing 'best_params' key")
     
     params = results["best_params"].copy()
-    
     # Convert learning rate configuration back to schedule object
     if "learning_rate" in params and isinstance(params["learning_rate"], dict):
         lr_config = params["learning_rate"]

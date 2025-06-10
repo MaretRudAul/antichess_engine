@@ -125,13 +125,14 @@ def validate_args(args):
         if total_prob > 1.0:
             print(f"Warning: Random + Heuristic probabilities sum to {total_prob:.2f} > 1.0")
             print(f"Remaining probability ({1.0 - total_prob:.2f}) will be used for self-play")
-    
-    # Validate timesteps
+      # Validate timesteps
     if args.total_timesteps <= 0:
         raise ValueError("total-timesteps must be positive")
     
-    if args.self_play_start >= args.total_timesteps:
-        raise ValueError("self-play-start must be less than total-timesteps")
+    # Only validate self-play-start for simple curriculum mode
+    if args.opponent == "curriculum" and not args.use_enhanced_curriculum:
+        if args.self_play_start >= args.total_timesteps:
+            raise ValueError("self-play-start must be less than total-timesteps")
     
     # Validate environment count
     if args.num_envs <= 0:
