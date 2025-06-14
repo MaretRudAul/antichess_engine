@@ -795,33 +795,102 @@ class PlateauDetectionCallback(BaseCallback):
         """Called at the end of each rollout to track performance."""
         self.rollout_count += 1
         
-        # Try to get mean reward from the training environment
+        # Try to get mean reward from various sources
         mean_reward = None
         
-        # Method 1: Check if we have episode info in locals
-        if hasattr(self, 'locals') and 'infos' in self.locals:
-            episode_rewards = []
-            for info in self.locals['infos']:
-                if isinstance(info, dict) and 'episode' in info:
-                    episode_rewards.append(info['episode']['r'])
-            if episode_rewards:
-                mean_reward = np.mean(episode_rewards)
+        # Method 1: Try to get from PPO's episode info buffer (most reliable)
+        if hasattr(self.model, 'ep_info_buffer') and self.model.ep_info_buffer:
+            # Get recent episode rewards from PPO's internal buffer
+            recent_episodes = list(self.model.ep_info_buffer)[-20:]  # Last 20 episodes
+            if recent_episodes:
+                episode_rewards = [ep_info['r'] for ep_info in recent_episodes if 'r' in ep_info]
+                if episode_rewards:
+                    mean_reward = np.mean(episode_rewards)
+                    if self.verbose > 2:
+                        print(f"    Method 1 success: {len(episode_rewards)} episodes, mean={mean_reward:.4f}")
         
-        # Method 2: Try to get from model's logger if available
-        if mean_reward is None and hasattr(self.model, 'logger'):
-            try:
-                # Get recent episode reward mean if available
-                if hasattr(self.model.logger, 'name_to_value'):
-                    if 'rollout/ep_rew_mean' in self.model.logger.name_to_value:
-                        mean_reward = self.model.logger.name_to_value['rollout/ep_rew_mean']
-            except:
-                pass
-        
-        # Method 3: Fallback to a simple heuristic based on timesteps
+        # Method 2: Try to access from callback locals/globals (set by SB3 during rollout)
         if mean_reward is None:
-            # Use a simple placeholder - in practice this would be improved
-            mean_reward = 0.0  # This is not ideal but prevents crashes
+            try:
+                # Check if we're in a callback context with locals/globals set
+                if hasattr(self, 'locals') and self.locals and 'ep_infos' in self.locals:
+                    ep_infos = self.locals['ep_infos']
+                    if ep_infos:
+                        episode_rewards = [info['r'] for info in ep_infos if 'r' in info]
+                        if episode_rewards:
+                            mean_reward = np.mean(episode_rewards)
+                            if self.verbose > 2:
+                                print(f"    Method 2 success: {len(episode_rewards)} episodes, mean={mean_reward:.4f}")
+            except Exception as e:
+                if self.verbose > 2:
+                    print(f"    Method 2 failed: {e}")
         
+        # Method 3: Try to access the logger's most recent values
+        if mean_reward is None and hasattr(self.model, 'logger') and hasattr(self.model.logger, 'name_to_value'):
+            try:
+                # Try different possible keys for episode reward mean
+                possible_keys = ['rollout/ep_rew_mean', 'train/ep_rew_mean', 'episode_reward_mean']
+                for key in possible_keys:
+                    if key in self.model.logger.name_to_value:
+                        mean_reward = self.model.logger.name_to_value[key]
+                        if self.verbose > 2:
+                            print(f"    Method 3 success: key='{key}', mean={mean_reward:.4f}")
+                        break
+            except Exception as e:
+                if self.verbose > 2:
+                    print(f"    Method 3 failed: {e}")
+        
+        # Method 4: Try to get from training environment's monitor wrapper
+        if mean_reward is None:
+            try:
+                env = self.model.get_env()
+                if hasattr(env, 'get_attr'):
+                    # Try to get recent episode rewards from Monitor wrappers
+                    try:
+                        # Get episode rewards from each environment's monitor
+                        all_rewards = []
+                        episode_rewards = env.get_attr('episode_rewards')
+                        for env_rewards in episode_rewards:
+                            if env_rewards and len(env_rewards) > 0:
+                                all_rewards.extend(env_rewards[-3:])  # Last 3 from each env
+                        if all_rewards:
+                            mean_reward = np.mean(all_rewards)
+                            if self.verbose > 2:
+                                print(f"    Method 4 success: {len(all_rewards)} episodes, mean={mean_reward:.4f}")
+                    except Exception as sub_e:
+                        if self.verbose > 2:
+                            print(f"    Method 4 sub-failed: {sub_e}")
+            except Exception as e:
+                if self.verbose > 2:
+                    print(f"    Method 4 failed: {e}")
+        
+        # If still no reward found, provide detailed debugging info
+        if mean_reward is None:
+            if self.verbose > 1:
+                print(f"    ⚠️  WARNING: Could not extract reward for rollout {self.rollout_count}")
+                if self.verbose > 2:
+                    print(f"    Debug info:")
+                    if hasattr(self.model, 'ep_info_buffer'):
+                        buffer_size = len(self.model.ep_info_buffer) if self.model.ep_info_buffer else 0
+                        print(f"      ep_info_buffer size: {buffer_size}")
+                        if buffer_size > 0:
+                            sample_info = list(self.model.ep_info_buffer)[-1]
+                            print(f"      latest ep_info keys: {list(sample_info.keys())}")
+                    if hasattr(self.model, 'logger') and hasattr(self.model.logger, 'name_to_value'):
+                        available_keys = list(self.model.logger.name_to_value.keys())
+                        reward_keys = [k for k in available_keys if 'reward' in k.lower() or 'rew' in k.lower() or 'ep_' in k.lower()]
+                        print(f"      Available episode/reward keys: {reward_keys[:10]}")  # Show first 10
+                    
+                    # Also check locals if available
+                    if hasattr(self, 'locals') and self.locals:
+                        local_keys = list(self.locals.keys())
+                        info_keys = [k for k in local_keys if 'info' in k.lower() or 'ep' in k.lower() or 'reward' in k.lower()]
+                        print(f"      Available locals keys: {info_keys}")
+            
+            # Don't add None/invalid rewards to our tracking - just skip this rollout
+            return
+        
+        # Successfully extracted a reward
         self.recent_rewards.append(mean_reward)
         
         # Keep only recent rewards for plateau detection
@@ -829,7 +898,7 @@ class PlateauDetectionCallback(BaseCallback):
             self.recent_rewards.pop(0)
         
         if self.verbose > 1:  # Only show with high verbosity
-            print(f"    Rollout {self.rollout_count}: Mean reward = {mean_reward:.4f}")
+            print(f"    Rollout {self.rollout_count}: Mean reward = {mean_reward:.4f} (tracking {len(self.recent_rewards)} rollouts)")
     
     def _is_in_final_phase(self) -> bool:
         """Check if we're in the final curriculum phase or not using curriculum."""
@@ -847,10 +916,18 @@ class PlateauDetectionCallback(BaseCallback):
         early_rewards = self.recent_rewards[:self.plateau_rollouts//2]
         recent_rewards = self.recent_rewards[self.plateau_rollouts//2:]
         
+        # Ensure we have valid rewards to compare
+        if not early_rewards or not recent_rewards:
+            return False
+        
         early_mean = np.mean(early_rewards)
         recent_mean = np.mean(recent_rewards)
         
         improvement = recent_mean - early_mean
+        
+        if self.verbose > 2:
+            print(f"    Plateau check: Early mean={early_mean:.4f}, Recent mean={recent_mean:.4f}, Improvement={improvement:.4f}")
+        
         return improvement < self.min_improvement
     
     def _on_step(self) -> bool:
@@ -864,9 +941,12 @@ class PlateauDetectionCallback(BaseCallback):
                     if rollout_size > 0:  # Additional safety check
                         current_rollout = self.num_timesteps // rollout_size
                         
+                        # Check if we've completed new rollouts
                         if current_rollout > self.rollout_count:
-                            # We've completed one or more rollouts
-                            self._on_rollout_end()
+                            # We may have completed multiple rollouts - call end for each
+                            rollouts_completed = current_rollout - self.rollout_count
+                            for _ in range(rollouts_completed):
+                                self._on_rollout_end()
                 elif hasattr(env, 'num_envs'):
                     # If num_envs is None, fall back to simple timestep-based detection
                     n_steps = getattr(self.model, 'n_steps', 2048)  # Default PPO rollout size
@@ -891,6 +971,8 @@ class PlateauDetectionCallback(BaseCallback):
                 current_phase = "final curriculum phase" if self.use_enhanced_curriculum else "training"
                 print(f"    🛑 PLATEAU DETECTED: No improvement for {self.plateau_rollouts} rollouts in {current_phase}")
                 print(f"       Recent rewards: {[f'{r:.4f}' for r in self.recent_rewards[-5:]]}")
+                print(f"       Early mean: {np.mean(self.recent_rewards[:self.plateau_rollouts//2]):.4f}")
+                print(f"       Late mean: {np.mean(self.recent_rewards[self.plateau_rollouts//2:]):.4f}")
                 print(f"       Stopping training early to save time...")
             return False
         
