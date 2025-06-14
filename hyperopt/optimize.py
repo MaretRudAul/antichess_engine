@@ -171,8 +171,28 @@ class HyperparameterOptimizer:
         Returns:
             Objective value (mean evaluation reward)
         """
+        print(f"\n{'='*60}")
+        print(f"STARTING TRIAL {trial.number + 1}")
+        print(f"{'='*60}")
+        
         # Get hyperparameters for this trial
         hyperparams = self.suggest_hyperparameters(trial)
+        
+        # Print the hyperparameters being tested
+        print("Hyperparameters for this trial:")
+        for key, value in hyperparams.items():
+            if key == "policy_kwargs":
+                print(f"  {key}:")
+                for subkey, subvalue in value.items():
+                    if subkey == "net_arch":
+                        print(f"    {subkey}: pi={subvalue['pi']}, vf={subvalue['vf']}")
+                    else:
+                        print(f"    {subkey}: {subvalue}")
+            elif hasattr(value, '__class__') and 'Schedule' in value.__class__.__name__:
+                print(f"  {key}: {value.__class__.__name__}")
+            else:
+                print(f"  {key}: {value}")
+        print()
         
         try:
             # Create temporary directory for this trial
@@ -193,15 +213,17 @@ class HyperparameterOptimizer:
                 eval_env = VecMonitor(eval_env)
                 
                 # Create model with suggested hyperparameters
+                print("Creating PPO model with suggested hyperparameters...")
                 model = PPO(
                     MaskedActorCriticPolicy,
                     train_env,
-                    verbose=0,
+                    verbose=0,  # Keep verbose=0 to reduce clutter
                     tensorboard_log=None,  # Disable tensorboard for optimization
                     **hyperparams
                 )
                 
                 # Create evaluation callback with pruning
+                print("Setting up evaluation callback with pruning...")
                 eval_callback = OptunaPruningCallback(
                     trial=trial,
                     eval_env=eval_env,
@@ -211,9 +233,14 @@ class HyperparameterOptimizer:
                 )
                 
                 # Train the model
+                print(f"Starting training for {self.optimization_config['total_timesteps']:,} timesteps...")
+                print(f"    Evaluation every {self.optimization_config['eval_freq']:,} timesteps")
+                print(f"    Using {self.optimization_config['num_envs']} parallel environments")
+                
                 model.learn(
                     total_timesteps=self.optimization_config["total_timesteps"],
-                    callback=eval_callback
+                    callback=eval_callback,
+                    progress_bar=False  # We'll handle our own progress reporting
                 )
                 
                 # Get final evaluation score
@@ -223,10 +250,19 @@ class HyperparameterOptimizer:
                 train_env.close()
                 eval_env.close()
                 
+                # Report trial results
+                print(f"TRIAL {trial.number + 1} COMPLETED")
+                print(f"    Final reward: {final_reward:.4f}")
+                print(f"    Training completed successfully!")
+                print(f"{'='*60}\n")
+                
                 return final_reward
                 
         except Exception as e:
-            print(f"Trial {trial.number} failed with error: {e}")
+            print(f"TRIAL {trial.number + 1} FAILED")
+            print(f"    Error: {e}")
+            print(f"    Returning penalty score...")
+            print(f"{'='*60}\n")
             # Return a very low score for failed trials
             return -1000.0
     
@@ -249,13 +285,28 @@ class HyperparameterOptimizer:
         
         print(f"Starting hyperparameter optimization with {self.n_trials} trials...")
         print(f"Study name: {self.study_name}")
+        print(f"Training timesteps per trial: {self.optimization_config['total_timesteps']:,}")
+        print(f"Evaluation frequency: {self.optimization_config['eval_freq']:,}")
+        print(f"Parallel environments: {self.optimization_config['num_envs']}")
+        print()
+        
+        # Define a callback to show progress between trials
+        def trial_callback(study, trial):
+            if trial.state == optuna.trial.TrialState.COMPLETE:
+                print(f"OPTIMIZATION PROGRESS:")
+                print(f"    Completed trials: {len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])}/{self.n_trials}")
+                if study.best_value is not None:
+                    print(f"    Best value so far: {study.best_value:.4f}")
+                    print(f"    Best trial: #{study.best_trial.number + 1}")
+                print()
         
         # Run optimization
         study.optimize(
             self.objective,
             n_trials=self.n_trials,
             n_jobs=self.n_jobs,
-            show_progress_bar=True
+            show_progress_bar=True,
+            callbacks=[trial_callback]
         )
         
         return study
@@ -403,12 +454,18 @@ class OptunaPruningCallback(EvalCallback):
                 if current_reward > self.best_mean_reward:
                     self.best_mean_reward = current_reward
                 
+                # Progress reporting
+                progress_pct = (self.num_timesteps / 2_000_000) * 100  # Assuming 2M timesteps
+                print(f"    Evaluation {self.eval_idx + 1} at {self.num_timesteps:,} steps ({progress_pct:.1f}%)")
+                print(f"       Current reward: {current_reward:.4f} | Best so far: {self.best_mean_reward:.4f}")
+                
                 # Report to Optuna
                 self.trial.report(current_reward, step=self.eval_idx)
                 
                 # Check if trial should be pruned
                 if self.trial.should_prune():
-                    print(f"Trial {self.trial.number} pruned at step {self.eval_idx}")
+                    print(f"    Trial {self.trial.number + 1} PRUNED at step {self.eval_idx}")
+                    print(f"       Reason: Performance below median of previous trials")
                     return False
                 
                 self.eval_idx += 1
