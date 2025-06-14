@@ -100,7 +100,7 @@ class EnhancedCurriculumCallback(BaseCallback):
     Uses the config-defined curriculum schedule.
     """
     
-    def __init__(self, curriculum_config=None, model_dir=None, verbose=0):
+    def __init__(self, curriculum_config=None, model_dir=None, total_timesteps=None, verbose=0):
         super(EnhancedCurriculumCallback, self).__init__(verbose)
         self.curriculum_config = curriculum_config or get_curriculum_config()
         self.current_phase = 0
@@ -108,6 +108,11 @@ class EnhancedCurriculumCallback(BaseCallback):
         self.phase_start_timestep = 0
         self.model_set_for_self_play = False
         self.model_dir = model_dir  # Store model directory
+        self.total_timesteps = total_timesteps
+        
+        # Scale curriculum phases based on actual training length
+        if self.total_timesteps:
+            self._scale_curriculum_phases()
         
     def _on_training_start(self) -> None:
         """Initialize curriculum at training start."""
@@ -183,27 +188,85 @@ class EnhancedCurriculumCallback(BaseCallback):
         
         # Check if we need to advance to the next phase
         phase_duration = current_phase["timesteps"]
-        if self.num_timesteps >= self.phase_start_timestep + phase_duration:
-            # Time to advance to next phase
+        
+        # Skip phases with 0 timesteps (disabled phases)
+        if phase_duration == 0:
             if self.current_phase + 1 < len(self.phase_keys):
-                if self.verbose > 0:
-                    next_phase_key = self.phase_keys[self.current_phase + 1]
-                    print(f"\nCURRICULUM PHASE TRANSITION at timestep {self.num_timesteps:,}")
-                    print(f"   Transitioning from {current_phase_key} to {next_phase_key}")
-                
-                # Update phase and starting timestep
                 self.current_phase += 1
                 self.phase_start_timestep = self.num_timesteps
+                self._update_phase_if_needed()  # Check the next phase immediately
+            return
+        
+        # Only advance if phase has a finite duration and we've exceeded it
+        # Also check that we haven't finished training (avoid end-of-training transitions)
+        if (phase_duration is not None and 
+            phase_duration != float('inf') and 
+            self.num_timesteps >= self.phase_start_timestep + phase_duration and
+            self.total_timesteps is not None and 
+            self.num_timesteps < self.total_timesteps):  # Don't transition at the very end
+            
+            # Time to advance to next phase
+            if self.current_phase + 1 < len(self.phase_keys):
+                # Check if the next phase is also disabled (0 timesteps)
+                next_phase_key = self.phase_keys[self.current_phase + 1]
+                next_phase_duration = self.curriculum_config[next_phase_key]["timesteps"]
                 
-                # Reset value function to help adapt to new phase
-                self._reset_value_function()
-                
-                # Apply the new phase configuration
-                self._apply_phase_configuration()
+                if next_phase_duration > 0:  # Only transition to active phases
+                    if self.verbose > 0:
+                        print(f"\nCURRICULUM PHASE TRANSITION at timestep {self.num_timesteps:,}")
+                        print(f"   Transitioning from {current_phase_key} to {next_phase_key}")
+                    
+                    # Update phase and starting timestep
+                    self.current_phase += 1
+                    self.phase_start_timestep = self.num_timesteps
+                    
+                    # Reset value function to help adapt to new phase
+                    self._reset_value_function()
+                    
+                    # Apply the new phase configuration
+                    self._apply_phase_configuration()
         elif self.current_phase == 0 and self.num_timesteps == 0:
             # Initial phase setup
             self._apply_phase_configuration()
     
+    def _scale_curriculum_phases(self):
+        """Scale curriculum phases based on actual training timesteps."""
+        # Get the original total timesteps from the config (sum of all phases)
+        original_total = 0
+        for phase_key in self.phase_keys:
+            phase_timesteps = self.curriculum_config[phase_key]["timesteps"]
+            if phase_timesteps is not None:
+                original_total += phase_timesteps
+        
+        if original_total == 0:
+            return  # Can't scale if we don't have original totals
+        
+        # Calculate scaling factor
+        scale_factor = self.total_timesteps / original_total
+        
+        # Scale each phase duration
+        for phase_key in self.phase_keys:
+            if self.curriculum_config[phase_key]["timesteps"] is not None:
+                original_duration = self.curriculum_config[phase_key]["timesteps"]
+                scaled_duration = int(original_duration * scale_factor)
+                # Ensure minimum phase duration of at least 1000 timesteps
+                scaled_duration = max(scaled_duration, 1000)
+                self.curriculum_config[phase_key]["timesteps"] = scaled_duration
+        
+        # For short training runs, we might want to limit to fewer phases
+        if self.total_timesteps < 50_000:
+            # For very short runs, only use phase 1 (random opponents)
+            for i, phase_key in enumerate(self.phase_keys):
+                if i == 0:
+                    # First phase gets all the timesteps
+                    self.curriculum_config[phase_key]["timesteps"] = self.total_timesteps
+                else:
+                    # Disable other phases by setting timesteps to 0
+                    self.curriculum_config[phase_key]["timesteps"] = 0
+        
+        if self.verbose > 1:
+            print(f"   Curriculum scaled for {self.total_timesteps:,} timesteps (factor: {scale_factor:.3f})")
+
     def _print_curriculum_schedule(self):
         """Print the full curriculum schedule."""
         print("Curriculum Schedule:")
@@ -214,15 +277,19 @@ class EnhancedCurriculumCallback(BaseCallback):
             duration = phase_config["timesteps"]
             opponent_mix = phase_config["opponent_mix"]
             
-            if duration == float('inf'):
+            if duration is None or duration == float('inf'):
                 print(f"  Phase {i+1} ({phase_key}): {cumulative_timesteps:,}+ timesteps")
+            elif duration == 0:
+                print(f"  Phase {i+1} ({phase_key}): DISABLED (0 timesteps)")
             else:
                 end_timesteps = cumulative_timesteps + duration
                 print(f"  Phase {i+1} ({phase_key}): {cumulative_timesteps:,} - {end_timesteps:,} timesteps")
                 cumulative_timesteps = end_timesteps
             
-            for opponent, prob in opponent_mix.items():
-                print(f"    {opponent}: {prob:.1%}")
+            # Only show opponent mix for active phases
+            if duration != 0:
+                for opponent, prob in opponent_mix.items():
+                    print(f"    {opponent}: {prob:.1%}")
 
     
     def _reset_value_function(self):

@@ -111,6 +111,7 @@ class CurriculumAwareSchedule:
     - Phase 1 (random opponents): Linear schedule
     - Phase 2 (mixed random/heuristic): Linear schedule
     - Phase 3 (includes self-play): Cosine annealing
+    - Phase 4 (primarily self-play): Cosine annealing
     """
     
     def __init__(self, initial_value: float, final_value: float = 1e-6, 

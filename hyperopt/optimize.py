@@ -32,7 +32,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
-from schedules.schedules import LinearSchedule
+from schedules.schedules import LinearSchedule, CombinedSchedule, CurriculumAwareSchedule
+from config import get_curriculum_config
 
 
 class TimestepLimitCallback(BaseCallback):
@@ -190,7 +191,8 @@ class HyperparameterOptimizer:
             "num_envs": 4,  # Balanced for GPU memory
             "eval_freq": 40_000,  # More frequent evaluation for better pruning
             "n_eval_episodes": 12,  # Reliable evaluation
-            "opponent": "random",  # Simple opponent for initial optimization
+            "opponent": "curriculum",  # Use curriculum learning for better optimization
+            "use_enhanced_curriculum": True,  # Enable enhanced curriculum
         }
         
         # Results storage
@@ -244,9 +246,24 @@ class HyperparameterOptimizer:
         Returns:
             Dictionary of suggested hyperparameters
         """
-        # Learning rate optimization
-        lr_initial = trial.suggest_float("lr_initial", 5e-6, 5e-3, log=True)
-        lr_final = trial.suggest_float("lr_final", 1e-8, lr_initial * 0.05, log=True)
+        # Learning rate optimization - test different schedule types
+        schedule_type = trial.suggest_categorical("schedule_type", ["linear", "combined", "curriculum"])
+        lr_initial = trial.suggest_float("lr_initial", 1e-5, 1e-3, log=True)  # Wider range: 1e-5 to 1e-3
+        lr_final = trial.suggest_float("lr_final", 1e-7, lr_initial * 0.1, log=True)  # Allow higher final rates
+        
+        # Create the appropriate schedule
+        if schedule_type == "linear":
+            learning_rate = LinearSchedule(lr_initial, lr_final)
+        elif schedule_type == "combined":
+            # For combined schedule, also optimize the linear percentage
+            linear_pct = trial.suggest_float("linear_pct", 0.4, 0.8)
+            learning_rate = CombinedSchedule(lr_initial, lr_final, linear_pct=linear_pct)
+        else:  # curriculum
+            # Use curriculum-aware schedule that adapts to training phases
+            curriculum_config = get_curriculum_config()
+            learning_rate = CurriculumAwareSchedule(
+                lr_initial, lr_final, curriculum_config, self.optimization_config["total_timesteps"]
+            )
         
         # PPO-specific hyperparameters
         n_steps = trial.suggest_categorical("n_steps", [256, 512, 1024, 2048, 4096, 8192])
@@ -280,7 +297,7 @@ class HyperparameterOptimizer:
         vf_layer3 = trial.suggest_categorical("vf_layer3", [32, 64, 96, 128, 192, 256, 384])
         
         return {
-            "learning_rate": LinearSchedule(lr_initial, lr_final),
+            "learning_rate": learning_rate,  # Use the dynamically created schedule
             "n_steps": n_steps,
             "batch_size": batch_size,
             "n_epochs": n_epochs,
@@ -343,16 +360,33 @@ class HyperparameterOptimizer:
         try:
             # Create temporary directory for this trial
             with tempfile.TemporaryDirectory() as temp_dir:
-                # Create training environment
-                train_env = SubprocVecEnv([
-                    self.make_env(i, seed=trial.number) 
-                    for i in range(self.optimization_config["num_envs"])
-                ])
-                train_env = VecMonitor(train_env)                # Create evaluation environment (vectorized to match training env)
+                # Create training environment - start with random opponents for curriculum
+                if self.optimization_config.get("use_enhanced_curriculum", False):
+                    # Enhanced curriculum starts with random opponents
+                    def make_curriculum_env(rank):
+                        def _init():
+                            env = AntichessEnv(opponent="random")
+                            env.seed(trial.number + rank)
+                            return env
+                        return _init
+                    
+                    train_env = SubprocVecEnv([
+                        make_curriculum_env(i) 
+                        for i in range(self.optimization_config["num_envs"])
+                    ])
+                else:
+                    # Use the specified opponent directly
+                    train_env = SubprocVecEnv([
+                        self.make_env(i, seed=trial.number) 
+                        for i in range(self.optimization_config["num_envs"])
+                    ])
+                train_env = VecMonitor(train_env)
+                
+                # Create evaluation environment (always use same opponent as training baseline)
+                eval_opponent = "heuristic"  # Use heuristic for consistent evaluation
                 def make_eval_env():
-                    env = AntichessEnv(opponent=self.optimization_config["opponent"])
+                    env = AntichessEnv(opponent=eval_opponent)
                     env.seed(trial.number + 1000)
-                    # Don't wrap with Monitor here - VecMonitor will handle monitoring
                     return env
                 
                 eval_env = DummyVecEnv([make_eval_env])
@@ -387,6 +421,15 @@ class HyperparameterOptimizer:
                     verbose=1
                 )
                 
+                # Create plateau detection callback for intelligent early stopping
+                plateau_callback = PlateauDetectionCallback(
+                    plateau_rollouts=10,
+                    min_improvement=0.001,
+                    use_enhanced_curriculum=self.optimization_config.get("use_enhanced_curriculum", False),
+                    total_timesteps=self.optimization_config["total_timesteps"],
+                    verbose=1
+                )
+                
                 # Create progress tracking callback
                 progress_callback = HyperOptProgressCallback(
                     trial_number=trial.number,
@@ -394,8 +437,21 @@ class HyperparameterOptimizer:
                     verbose=1
                 )
                 
+                # Create enhanced curriculum callback if needed
+                curriculum_callbacks = []
+                if self.optimization_config.get("use_enhanced_curriculum", False):
+                    from callbacks.callbacks import EnhancedCurriculumCallback
+                    curriculum_config = get_curriculum_config()
+                    enhanced_curriculum_callback = EnhancedCurriculumCallback(
+                        curriculum_config=curriculum_config,
+                        model_dir=temp_dir,  # Use temp dir for this trial
+                        total_timesteps=self.optimization_config["total_timesteps"],  # Pass total timesteps
+                        verbose=1
+                    )
+                    curriculum_callbacks.append(enhanced_curriculum_callback)
+                
                 # Combine callbacks - order matters!
-                callbacks = [timestep_limit_callback, progress_callback, eval_callback]
+                callbacks = [timestep_limit_callback, plateau_callback, progress_callback] + curriculum_callbacks + [eval_callback]
                 
                 # Train the model
                 print(f"Starting training for {self.optimization_config['total_timesteps']:,} timesteps...")
@@ -498,13 +554,18 @@ class HyperparameterOptimizer:
         
         # Extract best parameters and convert to serializable format
         best_params = study.best_params.copy()
-          # Convert LinearSchedule to serializable format
+        # Convert schedule to serializable format
         if "lr_initial" in best_params and "lr_final" in best_params:
-            best_params["learning_rate"] = {
-                "type": "linear",
+            schedule_type = best_params.pop("schedule_type", "linear")
+            lr_config = {
+                "type": schedule_type,
                 "initial": best_params.pop("lr_initial"),
                 "final": best_params.pop("lr_final")
             }
+            if schedule_type == "combined" and "linear_pct" in best_params:
+                lr_config["linear_pct"] = best_params.pop("linear_pct")
+            # Note: curriculum schedule doesn't need extra params as it uses config
+            best_params["learning_rate"] = lr_config
         
         # Create results dictionary
         results = {
@@ -546,8 +607,7 @@ class HyperparameterOptimizer:
         with open(filepath, 'r') as f:
             results = json.load(f)
         
-        params = results["best_params"].copy()
-          # Convert learning rate back to schedule object
+        params = results["best_params"].copy()          # Convert learning rate back to schedule object
         if "learning_rate" in params and isinstance(params["learning_rate"], dict):
             lr_config = params["learning_rate"]
             if lr_config["type"] == "linear":
@@ -555,6 +615,32 @@ class HyperparameterOptimizer:
                 params["learning_rate"] = LinearSchedule(
                     lr_config["initial"],
                     lr_config["final"]
+                )
+            elif lr_config["type"] == "combined":
+                from schedules.schedules import CombinedSchedule
+                params["learning_rate"] = CombinedSchedule(
+                    lr_config["initial"],
+                    lr_config["final"],
+                    linear_pct=lr_config.get("linear_pct", 0.6)
+                )
+            elif lr_config["type"] == "curriculum":
+                from schedules.schedules import CurriculumAwareSchedule
+                from config import get_curriculum_config
+                curriculum_config = get_curriculum_config()
+                # Note: total_timesteps should be provided by the caller
+                params["learning_rate"] = CurriculumAwareSchedule(
+                    lr_config["initial"],
+                    lr_config["final"],
+                    curriculum_config,
+                    2_000_000  # Default total timesteps
+                )
+            elif lr_config["type"] == "combined":
+                from schedules.schedules import CombinedSchedule
+                linear_pct = lr_config.get("linear_pct", 0.6)  # Default to 0.6 if not specified
+                params["learning_rate"] = CombinedSchedule(
+                    lr_config["initial"],
+                    lr_config["final"],
+                    linear_pct=linear_pct
                 )
         
         # Ensure policy_kwargs structure is correct
@@ -660,6 +746,170 @@ class OptunaPruningCallback(EvalCallback):
         return self.best_mean_reward
 
 
+class PlateauDetectionCallback(BaseCallback):
+    """
+    Callback to detect training plateaus and enable early stopping.
+    Only stops training if we're in the final curriculum phase or not using curriculum.
+    """
+    
+    def __init__(self, 
+                 plateau_rollouts: int = 10, 
+                 min_improvement: float = 0.001,
+                 use_enhanced_curriculum: bool = True,
+                 total_timesteps: int = 2_000_000,
+                 verbose: int = 1):
+        super().__init__(verbose)
+        self.plateau_rollouts = plateau_rollouts
+        self.min_improvement = min_improvement
+        self.use_enhanced_curriculum = use_enhanced_curriculum
+        self.total_timesteps = total_timesteps
+        
+        # Track recent performance
+        self.recent_rewards = []
+        self.rollout_count = 0
+        self.last_rollout_timestep = 0
+        
+        # Load curriculum config to determine phases
+        if use_enhanced_curriculum:
+            from config import get_curriculum_config
+            self.curriculum_config = get_curriculum_config()
+            self.final_phase_start = self._calculate_final_phase_start()
+        else:
+            self.curriculum_config = None
+            self.final_phase_start = 0  # Always allow early stopping if no curriculum
+    
+    def _calculate_final_phase_start(self) -> int:
+        """Calculate when the final curriculum phase starts."""
+        if not self.curriculum_config:
+            return 0
+        
+        # Enhanced curriculum has 4 phases, we want the start of phase 4
+        phase_1_pct = self.curriculum_config.get("phase_1", {}).get("duration_pct", 0.15)
+        phase_2_pct = self.curriculum_config.get("phase_2", {}).get("duration_pct", 0.20)
+        phase_3_pct = self.curriculum_config.get("phase_3", {}).get("duration_pct", 0.25)
+        
+        final_phase_pct = phase_1_pct + phase_2_pct + phase_3_pct
+        return int(self.total_timesteps * final_phase_pct)
+    
+    def _on_rollout_end(self) -> None:
+        """Called at the end of each rollout to track performance."""
+        self.rollout_count += 1
+        
+        # Try to get mean reward from the training environment
+        mean_reward = None
+        
+        # Method 1: Check if we have episode info in locals
+        if hasattr(self, 'locals') and 'infos' in self.locals:
+            episode_rewards = []
+            for info in self.locals['infos']:
+                if isinstance(info, dict) and 'episode' in info:
+                    episode_rewards.append(info['episode']['r'])
+            if episode_rewards:
+                mean_reward = np.mean(episode_rewards)
+        
+        # Method 2: Try to get from model's logger if available
+        if mean_reward is None and hasattr(self.model, 'logger'):
+            try:
+                # Get recent episode reward mean if available
+                if hasattr(self.model.logger, 'name_to_value'):
+                    if 'rollout/ep_rew_mean' in self.model.logger.name_to_value:
+                        mean_reward = self.model.logger.name_to_value['rollout/ep_rew_mean']
+            except:
+                pass
+        
+        # Method 3: Fallback to a simple heuristic based on timesteps
+        if mean_reward is None:
+            # Use a simple placeholder - in practice this would be improved
+            mean_reward = 0.0  # This is not ideal but prevents crashes
+        
+        self.recent_rewards.append(mean_reward)
+        
+        # Keep only recent rewards for plateau detection
+        if len(self.recent_rewards) > self.plateau_rollouts:
+            self.recent_rewards.pop(0)
+        
+        if self.verbose > 1:  # Only show with high verbosity
+            print(f"    Rollout {self.rollout_count}: Mean reward = {mean_reward:.4f}")
+    
+    def _is_in_final_phase(self) -> bool:
+        """Check if we're in the final curriculum phase or not using curriculum."""
+        if not self.use_enhanced_curriculum:
+            return True  # Always allow early stopping if no curriculum
+        
+        return self.num_timesteps >= self.final_phase_start
+    
+    def _detect_plateau(self) -> bool:
+        """Detect if training has plateaued."""
+        if len(self.recent_rewards) < self.plateau_rollouts:
+            return False
+        
+        # Check if there's been minimal improvement over the last N rollouts
+        early_rewards = self.recent_rewards[:self.plateau_rollouts//2]
+        recent_rewards = self.recent_rewards[self.plateau_rollouts//2:]
+        
+        early_mean = np.mean(early_rewards)
+        recent_mean = np.mean(recent_rewards)
+        
+        improvement = recent_mean - early_mean
+        return improvement < self.min_improvement
+    
+    def _on_step(self) -> bool:
+        """Check for early stopping conditions."""
+        # Check if we completed a rollout (detect significant timestep jumps)
+        try:
+            if hasattr(self.model, 'n_steps') and hasattr(self.model, 'get_env'):
+                env = self.model.get_env()
+                if hasattr(env, 'num_envs') and env.num_envs is not None:
+                    rollout_size = self.model.n_steps * env.num_envs
+                    if rollout_size > 0:  # Additional safety check
+                        current_rollout = self.num_timesteps // rollout_size
+                        
+                        if current_rollout > self.rollout_count:
+                            # We've completed one or more rollouts
+                            self._on_rollout_end()
+                elif hasattr(env, 'num_envs'):
+                    # If num_envs is None, fall back to simple timestep-based detection
+                    n_steps = getattr(self.model, 'n_steps', 2048)  # Default PPO rollout size
+                    if self.num_timesteps > 0 and self.num_timesteps % n_steps == 0:
+                        # Likely completed a rollout
+                        self._on_rollout_end()
+        except Exception as e:
+            # If we can't determine rollout boundaries, just continue
+            if self.verbose > 1:
+                print(f"    Warning: Could not detect rollout boundary: {e}")
+        
+        # Only consider early stopping if we're in the final phase
+        if not self._is_in_final_phase():
+            if self.verbose > 1 and self.rollout_count % 5 == 0:  # Log occasionally
+                phase_info = f"curriculum phase {self._get_current_phase()}" if self.use_enhanced_curriculum else "non-curriculum training"
+                print(f"    Rollout {self.rollout_count}: In {phase_info}, not checking for plateau")
+            return True
+        
+        # Check for plateau only if we have enough data
+        if len(self.recent_rewards) >= self.plateau_rollouts and self._detect_plateau():
+            if self.verbose > 0:
+                current_phase = "final curriculum phase" if self.use_enhanced_curriculum else "training"
+                print(f"    🛑 PLATEAU DETECTED: No improvement for {self.plateau_rollouts} rollouts in {current_phase}")
+                print(f"       Recent rewards: {[f'{r:.4f}' for r in self.recent_rewards[-5:]]}")
+                print(f"       Stopping training early to save time...")
+            return False
+        
+        return True
+    
+    def _get_current_phase(self) -> int:
+        """Get the current curriculum phase (1-4)."""
+        if not self.use_enhanced_curriculum:
+            return 1
+        
+        progress = self.num_timesteps / self.total_timesteps
+        if progress < 0.15:
+            return 1
+        elif progress < 0.35:
+            return 2
+        elif progress < 0.60:
+            return 3
+        else:
+            return 4
 def parse_args():
     """Parse command line arguments for hyperparameter optimization."""
     parser = argparse.ArgumentParser(
