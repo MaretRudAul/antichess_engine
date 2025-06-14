@@ -607,9 +607,10 @@ class OptunaPruningCallback(EvalCallback):
         self.evaluations_completed = 0
         
         print(f"    📊 Evaluation callback initialized:")
-        print(f"       Eval frequency: {self.eval_freq:,} timesteps")
+        print(f"       Eval frequency: {self.eval_freq:,} steps (per environment)")
         print(f"       Episodes per eval: {self.n_eval_episodes}")
         print(f"       Total timesteps: {total_timesteps:,}")
+        print(f"       Expected evaluations: ~{total_timesteps // (self.eval_freq * self.eval_env.num_envs)}")
     
     def _on_step(self) -> bool:
         """
@@ -756,12 +757,16 @@ def main():
         "num_envs": args.num_envs
     })
     
-    # Adjust evaluation frequency for very short runs
-    if args.training_timesteps <= 10000:
-        # For short runs, evaluate much more frequently or disable evaluation
-        optimizer.optimization_config["eval_freq"] = max(1000, args.training_timesteps // 4)
-        optimizer.optimization_config["n_eval_episodes"] = 3  # Fewer episodes for speed
-        print(f"Adjusted evaluation frequency to {optimizer.optimization_config['eval_freq']} for short training run")
+    # Adjust evaluation frequency for short runs
+    if args.training_timesteps <= 200_000:
+        # For short runs, evaluate much more frequently
+        # eval_freq should be based on steps per environment, not total timesteps
+        steps_per_env = args.training_timesteps // args.num_envs
+        eval_freq = max(1000, min(steps_per_env // 2, 10_000))  # Evaluate at least twice during training
+        optimizer.optimization_config["eval_freq"] = eval_freq
+        optimizer.optimization_config["n_eval_episodes"] = 5  # Fewer episodes for speed
+        print(f"Adjusted evaluation frequency to {eval_freq:,} steps (per env) for {args.training_timesteps:,} timestep run")
+        print(f"   This means ~{args.training_timesteps // eval_freq} evaluations during training")
     
     if args.show_results:
         # Just show existing results
