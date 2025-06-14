@@ -23,7 +23,7 @@ import optuna
 from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.callbacks import EvalCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, DummyVecEnv
 
@@ -33,6 +33,110 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
 from schedules.schedules import LinearSchedule
+
+
+class TimestepLimitCallback(BaseCallback):
+    """
+    Callback to enforce a strict timestep limit during training.
+    Stops training when the specified number of timesteps is reached.
+    """
+    
+    def __init__(self, max_timesteps: int, verbose: int = 1):
+        super().__init__(verbose)
+        self.max_timesteps = max_timesteps
+        
+    def _on_step(self) -> bool:
+        """Check if we should stop training due to timestep limit."""
+        if self.num_timesteps >= self.max_timesteps:
+            if self.verbose > 0:
+                print(f"   🛑 TIMESTEP LIMIT REACHED: {self.num_timesteps:,} >= {self.max_timesteps:,}")
+            return False  # Stop training
+        return True
+
+
+class HyperOptProgressCallback(BaseCallback):
+    """
+    Custom callback to show training progress during hyperparameter optimization.
+    Provides detailed progress information similar to regular training.
+    """
+    
+    def __init__(self, trial_number: int, total_timesteps: int, verbose: int = 1):
+        super().__init__(verbose)
+        self.trial_number = trial_number
+        self.total_timesteps = total_timesteps
+        self.start_time = None
+        self.last_update_time = None
+        self.last_timesteps = 0
+        # Fixed update interval - let TimestepLimitCallback handle early stopping
+        self.update_interval = 5000
+        
+    def _on_training_start(self) -> None:
+        """Initialize progress tracking when training starts."""
+        import time
+        self.start_time = time.time()
+        self.last_update_time = self.start_time
+        self.last_timesteps = 0
+        if self.verbose > 0:
+            print(f"\nTRIAL {self.trial_number + 1} TRAINING STARTED")
+            print(f"   Target: {self.total_timesteps:,} timesteps")
+            print(f"   {'='*50}")
+    
+    def _on_step(self) -> bool:
+        """Update progress information periodically."""
+        # Just show progress - let TimestepLimitCallback handle stopping
+        if self.verbose > 0 and self.num_timesteps > 0 and self.num_timesteps % self.update_interval == 0:
+            self._update_progress()
+        return True
+    
+    def _on_training_end(self) -> None:
+        """Show final training statistics."""
+        if self.verbose > 0:
+            self._update_progress(final=True)
+            import time
+            total_time = time.time() - self.start_time
+            avg_fps = self.num_timesteps / total_time if total_time > 0 else 0
+            print(f"   Training completed in {total_time:.1f}s")
+            print(f"   Average: {avg_fps:.1f} FPS")
+            print(f"   {'='*50}")
+    
+    def _update_progress(self, final: bool = False):
+        """Update and display current progress."""
+        import time
+        current_time = time.time()
+        
+        # Calculate progress
+        progress_pct = (self.num_timesteps / self.total_timesteps) * 100
+        
+        # Calculate FPS since last update
+        time_diff = current_time - self.last_update_time
+        timesteps_diff = self.num_timesteps - self.last_timesteps
+        current_fps = timesteps_diff / time_diff if time_diff > 0 else 0
+        
+        # Calculate ETA
+        if self.num_timesteps > 0 and not final:
+            elapsed_time = current_time - self.start_time
+            avg_fps = self.num_timesteps / elapsed_time
+            remaining_timesteps = self.total_timesteps - self.num_timesteps
+            eta_seconds = remaining_timesteps / avg_fps if avg_fps > 0 else 0
+            eta_str = f"ETA: {eta_seconds/60:.1f}m"
+        else:
+            eta_str = "Complete" if final else "Calculating..."
+        
+        # Create progress bar
+        bar_width = 30
+        filled_width = int(bar_width * min(progress_pct, 100) / 100)  # Cap at 100%
+        bar = "█" * filled_width + "░" * (bar_width - filled_width)
+        
+        # Print progress line  
+        status = "FINAL" if final else "PROGRESS"
+        progress_display = min(progress_pct, 100)  # Cap display at 100%
+        print(f"   {status}: [{bar}] {progress_display:5.1f}% | "
+              f"{self.num_timesteps:,}/{self.total_timesteps:,} | "
+              f"{current_fps:.1f} FPS | {eta_str}")
+        
+        # Update tracking variables
+        self.last_update_time = current_time
+        self.last_timesteps = self.num_timesteps
 
 
 class HyperparameterOptimizer:
@@ -217,8 +321,8 @@ class HyperparameterOptimizer:
                 model = PPO(
                     MaskedActorCriticPolicy,
                     train_env,
-                    verbose=0,  # Keep verbose=0 to reduce clutter
-                    tensorboard_log=None,  # Disable tensorboard for optimization
+                    verbose=1,  # Enable verbose output for training progress
+                    tensorboard_log=temp_dir,  # Enable tensorboard for this trial
                     **hyperparams
                 )
                 
@@ -226,11 +330,28 @@ class HyperparameterOptimizer:
                 print("Setting up evaluation callback with pruning...")
                 eval_callback = OptunaPruningCallback(
                     trial=trial,
+                    total_timesteps=self.optimization_config["total_timesteps"],
                     eval_env=eval_env,
                     eval_freq=self.optimization_config["eval_freq"],
                     n_eval_episodes=self.optimization_config["n_eval_episodes"],
                     deterministic=True
                 )
+                
+                # Create timestep limit callback
+                timestep_limit_callback = TimestepLimitCallback(
+                    max_timesteps=self.optimization_config["total_timesteps"],
+                    verbose=1
+                )
+                
+                # Create progress tracking callback
+                progress_callback = HyperOptProgressCallback(
+                    trial_number=trial.number,
+                    total_timesteps=self.optimization_config["total_timesteps"],
+                    verbose=1
+                )
+                
+                # Combine callbacks - order matters!
+                callbacks = [timestep_limit_callback, progress_callback, eval_callback]
                 
                 # Train the model
                 print(f"Starting training for {self.optimization_config['total_timesteps']:,} timesteps...")
@@ -239,7 +360,7 @@ class HyperparameterOptimizer:
                 
                 model.learn(
                     total_timesteps=self.optimization_config["total_timesteps"],
-                    callback=eval_callback,
+                    callback=callbacks,
                     progress_bar=False  # We'll handle our own progress reporting
                 )
                 
@@ -293,19 +414,22 @@ class HyperparameterOptimizer:
         # Define a callback to show progress between trials
         def trial_callback(study, trial):
             if trial.state == optuna.trial.TrialState.COMPLETE:
-                print(f"OPTIMIZATION PROGRESS:")
-                print(f"    Completed trials: {len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])}/{self.n_trials}")
+                completed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+                print(f"\n🎯 OPTIMIZATION PROGRESS: {completed_trials}/{self.n_trials} trials completed")
                 if study.best_value is not None:
-                    print(f"    Best value so far: {study.best_value:.4f}")
-                    print(f"    Best trial: #{study.best_trial.number + 1}")
-                print()
+                    print(f"    Best reward so far: {study.best_value:.4f} (Trial #{study.best_trial.number + 1})")
+                print(f"    {'='*60}")
+            elif trial.state == optuna.trial.TrialState.PRUNED:
+                print(f"    ✂️ Trial #{trial.number + 1} was pruned")
+            elif trial.state == optuna.trial.TrialState.FAIL:
+                print(f"    ❌ Trial #{trial.number + 1} failed")
         
         # Run optimization
         study.optimize(
             self.objective,
             n_trials=self.n_trials,
             n_jobs=self.n_jobs,
-            show_progress_bar=True,
+            show_progress_bar=False,  # Disable default progress bar to reduce clutter
             callbacks=[trial_callback]
         )
         
@@ -422,18 +546,20 @@ class OptunaPruningCallback(EvalCallback):
     for early termination of unpromising trials.
     """
     
-    def __init__(self, trial: optuna.Trial, **kwargs):
+    def __init__(self, trial: optuna.Trial, total_timesteps: int = 2_000_000, **kwargs):
         """
         Initialize the pruning callback.
         
         Args:
             trial: Optuna trial object
+            total_timesteps: Total training timesteps for progress calculation
             **kwargs: Arguments passed to EvalCallback
         """
         super().__init__(**kwargs)
         self.trial = trial
         self.eval_idx = 0
         self.best_mean_reward = -np.inf
+        self.total_timesteps = total_timesteps
     
     def _on_step(self) -> bool:
         """
@@ -455,8 +581,8 @@ class OptunaPruningCallback(EvalCallback):
                     self.best_mean_reward = current_reward
                 
                 # Progress reporting
-                progress_pct = (self.num_timesteps / 2_000_000) * 100  # Assuming 2M timesteps
-                print(f"    Evaluation {self.eval_idx + 1} at {self.num_timesteps:,} steps ({progress_pct:.1f}%)")
+                progress_pct = (self.num_timesteps / self.total_timesteps) * 100
+                print(f"    📊 EVALUATION {self.eval_idx + 1} at {self.num_timesteps:,} steps ({progress_pct:.1f}%)")
                 print(f"       Current reward: {current_reward:.4f} | Best so far: {self.best_mean_reward:.4f}")
                 
                 # Report to Optuna
@@ -464,8 +590,9 @@ class OptunaPruningCallback(EvalCallback):
                 
                 # Check if trial should be pruned
                 if self.trial.should_prune():
-                    print(f"    Trial {self.trial.number + 1} PRUNED at step {self.eval_idx}")
+                    print(f"    ✂️ TRIAL {self.trial.number + 1} PRUNED at evaluation {self.eval_idx + 1}")
                     print(f"       Reason: Performance below median of previous trials")
+                    print(f"       Final reward: {current_reward:.4f}")
                     return False
                 
                 self.eval_idx += 1
@@ -564,6 +691,13 @@ def main():
         "total_timesteps": args.training_timesteps,
         "num_envs": args.num_envs
     })
+    
+    # Adjust evaluation frequency for very short runs
+    if args.training_timesteps <= 10000:
+        # For short runs, evaluate much more frequently or disable evaluation
+        optimizer.optimization_config["eval_freq"] = max(1000, args.training_timesteps // 4)
+        optimizer.optimization_config["n_eval_episodes"] = 3  # Fewer episodes for speed
+        print(f"Adjusted evaluation frequency to {optimizer.optimization_config['eval_freq']} for short training run")
     
     if args.show_results:
         # Just show existing results
