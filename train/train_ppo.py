@@ -280,11 +280,28 @@ def main():
     if args.opponent == "curriculum" or args.opponent == "self_play":
         print(f"   Self-play model update frequency: {args.self_play_update_freq:,}")
     
-    # Set device
+    # Set device with detailed CUDA information
     if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print(f"🔥 CUDA detected! Using GPU: {torch.cuda.get_device_name(0)}")
+            print(f"   CUDA version: {torch.version.cuda}")
+            print(f"   Available GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        else:
+            device = torch.device("cpu")
+            print("⚠️  CUDA not available, using CPU")
+    elif args.device == "cuda":
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print(f"🔥 Using GPU: {torch.cuda.get_device_name(0)}")
+            print(f"   CUDA version: {torch.version.cuda}")
+            print(f"   Available GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        else:
+            print("❌ CUDA requested but not available! Falling back to CPU")
+            device = torch.device("cpu")
     else:
-        device = torch.device(args.device)
+        device = torch.device("cpu")
+        print("💻 Using CPU for training")
     
     print(f"   Device: {device}")
     

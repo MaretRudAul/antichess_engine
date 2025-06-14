@@ -157,7 +157,8 @@ class HyperparameterOptimizer:
         n_jobs: int = 1,
         sampler: Optional[optuna.samplers.BaseSampler] = None,
         pruner: Optional[optuna.pruners.BasePruner] = None,
-        load_if_exists: bool = True
+        load_if_exists: bool = True,
+        device: str = "auto"
     ):
         """
         Initialize the hyperparameter optimizer.
@@ -169,12 +170,16 @@ class HyperparameterOptimizer:
             n_jobs: Number of parallel optimization jobs
             sampler: Optuna sampler (defaults to TPESampler)
             pruner: Optuna pruner (defaults to MedianPruner)
+            device: Device to use ('auto', 'cuda', 'cpu')
         """        
         self.study_name = study_name
         self.storage = storage
         self.n_trials = n_trials
         self.n_jobs = n_jobs
         self.load_if_exists = load_if_exists
+        
+        # Set up device with automatic detection
+        self.device = self._setup_device(device)
           # Set default sampler and pruner optimized for limited budget
         self.sampler = sampler or TPESampler(n_startup_trials=5, n_ei_candidates=50)
         self.pruner = pruner or MedianPruner(n_startup_trials=5, n_warmup_steps=15)
@@ -191,6 +196,43 @@ class HyperparameterOptimizer:
         # Results storage
         self.results_dir = "hyperopt_results"
         os.makedirs(self.results_dir, exist_ok=True)
+    
+    def _setup_device(self, device: str) -> str:
+        """
+        Set up the training device with automatic CUDA detection and fallback.
+        
+        Args:
+            device: Device preference ('auto', 'cuda', 'cpu')
+            
+        Returns:
+            Device string to use for training
+        """
+        import torch
+        
+        if device == "auto":
+            # Try CUDA first, fallback to CPU
+            if torch.cuda.is_available():
+                selected_device = "cuda"
+                print(f"🔥 CUDA detected! Using GPU: {torch.cuda.get_device_name(0)}")
+                print(f"   CUDA version: {torch.version.cuda}")
+                print(f"   Available GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            else:
+                selected_device = "cpu"
+                print("⚠️  CUDA not available, using CPU")
+        elif device == "cuda":
+            if torch.cuda.is_available():
+                selected_device = "cuda"
+                print(f"🔥 Using GPU: {torch.cuda.get_device_name(0)}")
+                print(f"   CUDA version: {torch.version.cuda}")
+                print(f"   Available GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            else:
+                print("❌ CUDA requested but not available! Falling back to CPU")
+                selected_device = "cpu"
+        else:
+            selected_device = "cpu"
+            print("💻 Using CPU for training")
+        
+        return selected_device
     
     def suggest_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
@@ -318,11 +360,13 @@ class HyperparameterOptimizer:
                 
                 # Create model with suggested hyperparameters
                 print("Creating PPO model with suggested hyperparameters...")
+                print(f"Using device: {self.device}")
                 model = PPO(
                     MaskedActorCriticPolicy,
                     train_env,
                     verbose=1,  # Enable verbose output for training progress
                     tensorboard_log=temp_dir,  # Enable tensorboard for this trial
+                    device=self.device,  # Explicitly set device
                     **hyperparams
                 )
                 
@@ -558,8 +602,14 @@ class OptunaPruningCallback(EvalCallback):
         super().__init__(**kwargs)
         self.trial = trial
         self.eval_idx = 0
-        self.best_mean_reward = -np.inf
+        self.best_mean_reward = -100.0  # Start with a reasonable default instead of -inf
         self.total_timesteps = total_timesteps
+        self.evaluations_completed = 0
+        
+        print(f"    📊 Evaluation callback initialized:")
+        print(f"       Eval frequency: {self.eval_freq:,} timesteps")
+        print(f"       Episodes per eval: {self.n_eval_episodes}")
+        print(f"       Total timesteps: {total_timesteps:,}")
     
     def _on_step(self) -> bool:
         """
@@ -575,10 +625,12 @@ class OptunaPruningCallback(EvalCallback):
             # Get current mean reward
             if hasattr(self, 'last_mean_reward'):
                 current_reward = self.last_mean_reward
+                self.evaluations_completed += 1
                 
                 # Update best reward
                 if current_reward > self.best_mean_reward:
                     self.best_mean_reward = current_reward
+                    print(f"New best mean reward!")
                 
                 # Progress reporting
                 progress_pct = (self.num_timesteps / self.total_timesteps) * 100
@@ -601,6 +653,9 @@ class OptunaPruningCallback(EvalCallback):
     
     def get_best_mean_reward(self) -> float:
         """Get the best mean reward achieved during evaluation."""
+        if self.evaluations_completed == 0:
+            print(f"    ⚠️  WARNING: No evaluations completed! Using default reward of 0.0")
+            return 0.0  # Return neutral reward instead of -inf if no evaluations happened
         return self.best_mean_reward
 
 
@@ -671,19 +726,28 @@ def parse_args():
         help="Show optimization results and exit"
     )
     
+    parser.add_argument(
+        "--device", 
+        type=str, 
+        default="auto",
+        choices=["auto", "cuda", "cpu"],
+        help="Device to use for training ('auto', 'cuda', 'cpu')"
+    )
+    
     return parser.parse_args()
 
 
 def main():
     """Main function for hyperparameter optimization."""
     args = parse_args()
-      # Create optimizer
+    # Create optimizer
     optimizer = HyperparameterOptimizer(
         study_name=args.study_name,
         storage=args.storage,
         n_trials=args.n_trials,
         n_jobs=args.n_jobs,
-        load_if_exists=args.load_study
+        load_if_exists=args.load_study,
+        device=args.device  # Use device from command line
     )
     
     # Update optimization config with command line arguments
