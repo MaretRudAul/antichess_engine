@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
-from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG, load_optimized_hyperparameters
+from config import get_ppo_params, get_training_params, get_curriculum_config, load_optimized_hyperparameters
 from schedules.schedules import CurriculumAwareSchedule
 
 from callbacks.callbacks import (
@@ -38,6 +38,9 @@ def make_env(rank, opponent="random", seed=0):
     return _init
 
 def parse_args():
+    # Load configuration parameters
+    training_params = get_training_params()
+    
     parser = argparse.ArgumentParser(description="Train an Antichess agent using PPO")
     
     # Training configuration
@@ -45,17 +48,17 @@ def parse_args():
                        choices=["random", "heuristic", "self_play", "curriculum", "mixed"],
                        help="Opponent strategy: random, heuristic, self_play, curriculum (random->self_play), or mixed")
     
-    parser.add_argument("--total-timesteps", type=int, default=TRAINING_PARAMS["total_timesteps"],
+    parser.add_argument("--total-timesteps", type=int, default=training_params["total_timesteps"],
                        help="Total number of timesteps to train")
     
-    parser.add_argument("--num-envs", type=int, default=TRAINING_PARAMS["num_envs"],
+    parser.add_argument("--num-envs", type=int, default=training_params["num_envs"],
                        help="Number of parallel environments")
     
     # Self-play specific arguments
-    parser.add_argument("--self-play-start", type=int, default=TRAINING_PARAMS["self_play_start_step"],
+    parser.add_argument("--self-play-start", type=int, default=training_params["self_play_start_step"],
                        help="Timestep to start self-play (only for curriculum mode)")
     
-    parser.add_argument("--self-play-prob", type=float, default=TRAINING_PARAMS["self_play_probability"],
+    parser.add_argument("--self-play-prob", type=float, default=training_params["self_play_probability"],
                        help="Probability of using model vs random in self-play mode (0.0-1.0)")
     
     # Mixed opponent arguments
@@ -69,10 +72,10 @@ def parse_args():
     parser.add_argument("--no-resume", action="store_true",
                        help="Don't resume from checkpoint, start fresh training")
     
-    parser.add_argument("--eval-freq", type=int, default=TRAINING_PARAMS["eval_freq"],
+    parser.add_argument("--eval-freq", type=int, default=training_params["eval_freq"],
                        help="Evaluate every N timesteps")
     
-    parser.add_argument("--checkpoint-freq", type=int, default=TRAINING_PARAMS["checkpoint_freq"],
+    parser.add_argument("--checkpoint-freq", type=int, default=training_params["checkpoint_freq"],
                        help="Save checkpoint every N timesteps")
       # Curriculum options
     parser.add_argument("--use-enhanced-curriculum", action="store_true",
@@ -102,7 +105,7 @@ def parse_args():
     parser.add_argument("--verbose", action="store_true",
                        help="Enable verbose output")
 
-    parser.add_argument("--self-play-update-freq", type=int, default=TRAINING_PARAMS["self_play_update_freq"],
+    parser.add_argument("--self-play-update-freq", type=int, default=training_params["self_play_update_freq"],
                    help="Update self-play model every N timesteps")
     
     return parser.parse_args()
@@ -180,14 +183,16 @@ def extract_steps_from_checkpoint(checkpoint_path: str) -> int:
     except:
         pass
     
-    return TRAINING_PARAMS["checkpoint_freq"]
+    # Return a reasonable default rather than accessing global config
+    training_params = get_training_params()
+    return training_params["checkpoint_freq"]
 
 def create_new_model(env, log_dir, device="auto", lr_schedule=None, custom_hyperparams=None):
     """Create a new PPO model with the configured parameters"""
     print("Creating PPO agent with learning rate scheduling...")
     
     # Start with default PPO parameters
-    ppo_params = dict(PPO_PARAMS)
+    ppo_params = get_ppo_params(verbose=False)  # Disable verbose to avoid duplicate messages
     
     # Override with custom hyperparameters if provided
     if custom_hyperparams is not None:
@@ -216,6 +221,10 @@ def main():
     """Train a PPO agent to play Antichess with configurable opponents."""
     args = parse_args()
     validate_args(args)
+    
+    # Load configuration parameters
+    training_params = get_training_params()
+    curriculum_config = get_curriculum_config() 
     
     # Load custom hyperparameters if specified
     custom_hyperparams = None
@@ -260,9 +269,9 @@ def main():
         print("     Phase 3 (Mixed: random, heuristic, self-play): Cosine annealing")
         print("     Phase 4 (Mixed: majority self-play): Cosine annealing")
         curriculum_lr_schedule = CurriculumAwareSchedule(
-            CURRICULUM_CONFIG["lr_initial"], 
-            CURRICULUM_CONFIG["lr_final"], 
-            CURRICULUM_CONFIG, 
+            curriculum_config["lr_initial"], 
+            curriculum_config["lr_final"], 
+            curriculum_config, 
             args.total_timesteps
         )
     else:
@@ -341,7 +350,7 @@ def main():
         
         if args.use_enhanced_curriculum:
             print(f"Enhanced Curriculum Schedule:")
-            for phase_name, phase_config in CURRICULUM_CONFIG.items():
+            for phase_name, phase_config in curriculum_config.items():
                 print(f"   {phase_name}: {phase_config}")
         else:
             print(f"Simple Curriculum Schedule:")
@@ -382,7 +391,7 @@ def main():
         if args.use_enhanced_curriculum:
             # Use the enhanced multi-phase curriculum
             enhanced_curriculum_callback = EnhancedCurriculumCallback(
-                curriculum_config=CURRICULUM_CONFIG,
+                curriculum_config=curriculum_config,
                 verbose=1 if args.verbose else 0,
                 model_dir=model_dir  # Pass model directory
             )
@@ -419,7 +428,7 @@ def main():
     eval_callback = MaskedEvalCallback(
         eval_env=eval_env,
         eval_freq=args.eval_freq,
-        n_eval_episodes=TRAINING_PARAMS["n_eval_episodes"],
+        n_eval_episodes=training_params["n_eval_episodes"],
         best_model_save_path=model_dir,
         log_path=log_dir,
         verbose=1

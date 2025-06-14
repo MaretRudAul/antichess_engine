@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from envs.antichess_env import AntichessEnv
 from models.custom_policy import ChessCNN, MaskedActorCriticPolicy
-from config import PPO_PARAMS, TRAINING_PARAMS, CURRICULUM_CONFIG
+from config import get_ppo_params, get_training_params, get_curriculum_config
 from schedules.schedules import CurriculumAwareSchedule
 
 import torch.multiprocessing as mp
@@ -102,7 +102,7 @@ class EnhancedCurriculumCallback(BaseCallback):
     
     def __init__(self, curriculum_config=None, model_dir=None, verbose=0):
         super(EnhancedCurriculumCallback, self).__init__(verbose)
-        self.curriculum_config = curriculum_config or CURRICULUM_CONFIG
+        self.curriculum_config = curriculum_config or get_curriculum_config()
         self.current_phase = 0
         self.phase_keys = [key for key in self.curriculum_config.keys() if key.startswith("phase_")]
         self.phase_start_timestep = 0
