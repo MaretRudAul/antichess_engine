@@ -22,7 +22,7 @@ class BoardEncoder:
     
     def encode_board(self, board: chess.Board) -> np.ndarray:
         """
-        Encode board position as 8x8x19 tensor
+        Encode board position as 19x8x8 tensor (channels-first for PyTorch)
         Planes 0-5: White pieces (P,R,N,B,Q,K)
         Planes 6-11: Black pieces (P,R,N,B,Q,K)
         Plane 12: Turn (1 for white, 0 for black)
@@ -33,10 +33,10 @@ class BoardEncoder:
         Plane 17: En passant target square
         Plane 18: Move count (normalized)
         
-        Returns: np.ndarray of shape (8, 8, 19)
+        Returns: np.ndarray of shape (19, 8, 8)
         """
         # Initialize tensor
-        tensor = np.zeros((8, 8, 19), dtype=np.float32)
+        tensor = np.zeros((19, 8, 8), dtype=np.float32)
         
         # Encode piece positions (planes 0-11)
         for square, piece in board.piece_map().items():
@@ -51,31 +51,31 @@ class BoardEncoder:
             else:
                 plane_idx = piece_plane + 6
             
-            tensor[row, col, plane_idx] = 1.0
+            tensor[plane_idx, row, col] = 1.0
         
         # Plane 12: Current turn (1 for white, 0 for black)
         if board.turn == chess.WHITE:
-            tensor[:, :, 12] = 1.0
+            tensor[12, :, :] = 1.0
         
         # Planes 13-16: Castling rights
         if board.has_kingside_castling_rights(chess.WHITE):
-            tensor[:, :, 13] = 1.0
+            tensor[13, :, :] = 1.0
         if board.has_queenside_castling_rights(chess.WHITE):
-            tensor[:, :, 14] = 1.0
+            tensor[14, :, :] = 1.0
         if board.has_kingside_castling_rights(chess.BLACK):
-            tensor[:, :, 15] = 1.0
+            tensor[15, :, :] = 1.0
         if board.has_queenside_castling_rights(chess.BLACK):
-            tensor[:, :, 16] = 1.0
+            tensor[16, :, :] = 1.0
         
         # Plane 17: En passant target square
         if board.ep_square is not None:
             ep_row, ep_col = divmod(board.ep_square, 8)
-            tensor[ep_row, ep_col, 17] = 1.0
+            tensor[17, ep_row, ep_col] = 1.0
         
         # Plane 18: Move count (normalized)
         # Normalize fullmove number to [0, 1] range (assuming max 200 moves)
         normalized_moves = min(board.fullmove_number / 200.0, 1.0)
-        tensor[:, :, 18] = normalized_moves
+        tensor[18, :, :] = normalized_moves
         
         return tensor
     
