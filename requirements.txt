@@ -1,39 +1,19 @@
-# Antichess RL Project Dependencies
-
-# Core ML/DL Libraries
 torch>=2.0.0
 pytorch-lightning>=2.0.0
-numpy>=1.24.0
-scipy>=1.10.0
-
-# Reinforcement Learning
-gymnasium>=0.28.0
+wandb>=0.15.0
 ray[rllib]>=2.5.0
-
-# Chess Engine
 python-chess>=1.999
-
-# Data Management
+gymnasium>=0.28.0
+numpy>=1.24.0
 pandas>=2.0.0
 pymongo>=4.0.0
 redis>=4.5.0
-
-# Experiment Tracking
-wandb>=0.15.0
-tensorboard>=2.12.0
-
-# Testing
 pytest>=7.0.0
-
-# Code Quality
 black>=23.0.0
 isort>=5.12.0
 mypy>=1.0.0
-
-# Visualization
+tensorboard>=2.12.0
+scipy>=1.10.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
-
-# Utilities
 tqdm>=4.65.0
-pyyaml>=6.0.0
