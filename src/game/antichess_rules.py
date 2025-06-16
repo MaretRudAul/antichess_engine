@@ -65,9 +65,6 @@ class AntichessGame:
         Returns: (is_over, result)
         """
         # Count pieces for each side
-        white_pieces = len(self.board.piece_map())
-        black_pieces = 0
-        
         white_piece_count = 0
         black_piece_count = 0
         
@@ -119,6 +116,10 @@ class AntichessGame:
         cloned_game.position_history = self.position_history.copy()
         return cloned_game
     
+    def get_fen(self) -> str:
+        """Get current position as FEN string (useful for debugging and persistence)"""
+        return self.board.fen()
+    
     def undo_move(self) -> bool:
         """
         Undo the last move
@@ -134,57 +135,63 @@ class AntichessGame:
         
         return True
     
-    def get_fen(self) -> str:
-        """Get current position as FEN string"""
-        return self.board.fen()
-    
-    def set_fen(self, fen: str) -> bool:
+    def make_move_fast(self, move: chess.Move) -> bool:
         """
-        Set position from FEN string
-        Returns: True if FEN was valid and set
+        Fast move execution for MCTS simulations
+        WARNING: This assumes the move is already validated as legal!
+        Only use after calling get_legal_moves() to ensure move validity.
+        
+        Usage pattern:
+            legal_moves = game.get_legal_moves()
+            for move in legal_moves:  # We know these are legal
+                game.make_move_fast(move)  # Safe to use
+                # ... simulation ...
+                game.undo_move()
+        
+        Returns: True if move was executed
+        """
+        # Store position for history (needed for repetition detection)
+        self.position_history.append(self.board.fen())
+        
+        # Execute the move (will raise exception if move is illegal)
+        self.board.push(move)
+        self.move_history.append(move)
+        
+        return True
+    
+    def copy_for_thread(self) -> 'AntichessGame':
+        """
+        Create thread-safe deep copy optimized for MCTS workers
+        This is the preferred method for creating per-thread game instances
+        """
+        cloned_game = AntichessGame()
+        cloned_game.board = self.board.copy(stack=True)  # Ensure full stack copy
+        cloned_game.move_history = self.move_history.copy()
+        cloned_game.position_history = self.position_history.copy()
+        return cloned_game
+    
+    def get_move_count(self) -> int:
+        """Get number of moves played so far"""
+        return len(self.move_history)
+    
+    def verify_state_consistency(self) -> bool:
+        """
+        Verify internal state consistency (useful for debugging threading issues)
+        Returns: True if state is consistent
         """
         try:
-            self.board.set_fen(fen)
-            self.move_history.clear()
-            self.position_history.clear()
-            return True
-        except ValueError:
-            return False
-    
-    def get_current_player(self) -> chess.Color:
-        """Get the color of the player to move"""
-        return self.board.turn
-    
-    def get_piece_count(self, color: chess.Color) -> int:
-        """Get total piece count for a given color"""
-        count = 0
-        for square, piece in self.board.piece_map().items():
-            if piece.color == color:
-                count += 1
-        return count
-    
-    def has_forced_capture(self) -> bool:
-        """Check if current player has forced captures available"""
-        legal_moves = list(self.board.legal_moves)
-        for move in legal_moves:
-            if self.board.is_capture(move) or self.board.is_en_passant(move):
+            # Check that move history length matches position history
+            if len(self.move_history) != len(self.position_history):
+                return False
+            
+            # Check that board state is valid
+            if self.board.is_valid():
                 return True
-        return False
-    
-    def get_material_balance(self) -> int:
-        """
-        Get material balance (positive favors white, negative favors black)
-        In antichess, having fewer pieces is generally better
-        """
-        white_count = self.get_piece_count(chess.WHITE)
-        black_count = self.get_piece_count(chess.BLACK)
-        # In antichess, fewer pieces is better, so we invert the balance
-        return black_count - white_count
+            
+            return False
+        except:
+            return False
     
     def __str__(self) -> str:
         """String representation of the board"""
         return str(self.board)
-    
-    def __repr__(self) -> str:
-        """Detailed string representation"""
-        return f"AntichessGame(fen='{self.get_fen()}', moves={len(self.move_history)})"
