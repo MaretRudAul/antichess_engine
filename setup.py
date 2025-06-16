@@ -1,0 +1,52 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="antichess-rl",
+    version="0.1.0",
+    description="Professional-grade reinforcement learning system for antichess",
+    author="Your Name",
+    author_email="your.email@example.com",
+    packages=find_packages(),
+    python_requires=">=3.9",
+    install_requires=[
+        "torch>=2.0.0",
+        "pytorch-lightning>=2.0.0",
+        "wandb>=0.15.0",
+        "ray[rllib]>=2.5.0",
+        "python-chess>=1.999",
+        "gymnasium>=0.28.0",
+        "numpy>=1.24.0",
+        "pandas>=2.0.0",
+        "pymongo>=4.0.0",
+        "redis>=4.5.0",
+        "pytest>=7.0.0",
+        "black>=23.0.0",
+        "isort>=5.12.0",
+        "mypy>=1.0.0",
+        "tensorboard>=2.12.0",
+        "scipy>=1.10.0",
+        "matplotlib>=3.7.0",
+        "seaborn>=0.12.0",
+        "tqdm>=4.65.0",
+        "pyyaml>=6.0.0",
+    ],
+    extras_require={
+        "dev": [
+            "pytest>=7.0.0",
+            "black>=23.0.0",
+            "isort>=5.12.0",
+            "mypy>=1.0.0",
+        ],
+        "gpu": [
+            "torch[cuda]>=2.0.0",
+        ],
+    },
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+    ],
+)
